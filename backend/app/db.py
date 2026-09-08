@@ -164,7 +164,10 @@ _V4_DROPPED_ATTR_COLUMNS = ("equipment", "support", "grip", "angle")
 def _connect(db_path: str) -> sqlite3.Connection:
     path = Path(db_path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path)
+    # check_same_thread=False: FastAPI는 sync 의존성(require_auth)과 핸들러를 서로 다른
+    # threadpool 스레드에서 돌릴 수 있다. 연결은 요청 하나가 순차적으로만 쓰므로 안전하다.
+    # (v2에서 require_auth가 DB를 조회하면서 동시 요청 시 ProgrammingError 500이 났던 원인)
+    conn = sqlite3.connect(path, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
