@@ -1,0 +1,19 @@
+# secrets
+.env
+backend/.env
+
+# data
+backend/data/
+
+# python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# node / build
+node_modules/
+dist/
+
+# ops
+scripts/logs/

@@ -1,0 +1,232 @@
+@import "tailwindcss";
+
+/* 다크 테마 variant: html.dark 하위 전체에 적용 (테마 전환은 theme.ts가 html 클래스로 제어) */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* ---------------------------------------------------------------------------
+ * 셀프호스팅 숫자 폰트 (Google Fonts latin subset, variable wght 400–700)
+ * 다크 IRON = Oswald / 라이트 FRESH = Space Grotesk (--font-numeric 토큰으로 전환)
+ * ------------------------------------------------------------------------- */
+@font-face {
+  font-family: "Oswald";
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url("/fonts/oswald-latin-400-700.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+    U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193,
+    U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "Space Grotesk";
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url("/fonts/space-grotesk-latin-400-700.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+    U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193,
+    U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+/* ---------------------------------------------------------------------------
+ * Design Tokens — 기본값 = 라이트 "FRESH" (README Design Tokens 표)
+ * 다크 "IRON"은 아래 .dark 블록에서 같은 변수를 재정의.
+ * 컴포넌트는 시맨틱 유틸리티(bg-surface, text-muted, rounded-card, shadow-live,
+ * font-numeric …)만 사용할 것 — 테마 전환이 자동으로 반영된다.
+ *
+ * `static`인 이유: 차트 등에서 inline style `var(--color-ramp-N)`처럼 유틸리티
+ * 클래스 없이 변수만 참조하는 경우가 있어, tree-shake 없이 전 변수를 :root에 방출한다.
+ * ------------------------------------------------------------------------- */
+@theme static {
+  /* 배경/서페이스 */
+  --color-bg: #f4f6f3;
+  --color-surface: #ffffff; /* 카드 */
+  --color-surface-sunken: #ffffff; /* 완료 종목 카드·세트행 배경 (다크에서만 한 단계 가라앉음) */
+  --color-surface-2: #eef1ed; /* 눌림/보조 배경 (레거시 겸용) */
+  --color-well: #f4f6f3; /* 스테퍼 트랙·세트행 웰 */
+  --color-tabbar: #ffffff;
+
+  /* 보더 */
+  --color-line: #e3e7e1;
+  --color-line-dashed: #cdd6cc; /* 종목 추가 대시드 보더 */
+  --color-hairline: #e3e7e1; /* 탭바 상단 헤어라인 */
+
+  /* 텍스트 */
+  --color-text: #17211b; /* ink */
+  --color-secondary: #44524a; /* 라이트 값은 스펙에 없어 ink↔muted 보간 */
+  --color-muted: #71806f;
+  --color-faint: #9aa89a;
+
+  /* 액센트 */
+  --color-accent: #0fa96f;
+  --color-accent-deep: #0c8a5b; /* 라이트 값은 스펙에 없어 accent 어둡게 보간 (다크=#c2410c) */
+  --color-accent-dim: #0c8a5b; /* 레거시 alias — accent-deep과 동일 */
+  --color-accent-glow: #0fa96f14; /* 라이트=8% tint, 다크=글로우 링 */
+  --color-on-accent: #ffffff; /* 주 버튼 텍스트: 라이트=흰색, 다크=bg색 */
+
+  /* PR 뱃지 */
+  --color-pr: #eab308;
+  --color-on-pr: #ffffff;
+
+  /* 상태 */
+  --color-danger: #dc2626;
+  /* 히어로 카드 전용 danger — 라이트 히어로는 잉크 다크카드(#17211b)라 #dc2626이 대비 미달.
+   * 양 테마 히어로 배경 모두 어두워 밝은 red 하나로 충분 (.dark 재정의 불필요, 다크 danger와 동일값) */
+  --color-hero-danger: #f87171;
+
+  /* 차트 — 히어로 카드 (라이트=잉크 다크카드, 다크=surface) */
+  --color-hero: #17211b;
+  --color-hero-text: #ffffff;
+  --color-hero-muted: #9db3a2;
+  --color-hero-accent: #3ddc97;
+
+  /* 차트 — 12주 바: 과거 3단계 톤 + 현재 주 accent 그라디언트 */
+  --color-bar-hist-1: #2e3d33;
+  --color-bar-hist-2: #3a4d40;
+  --color-bar-hist-3: #46604e;
+  --color-bar-now-from: #3ddc97;
+  --color-bar-now-to: #3ddc97;
+
+  /* 부위별 분배 램프 (1=최대 볼륨 부위) */
+  --color-ramp-1: #0fa96f;
+  --color-ramp-2: #26b583;
+  --color-ramp-3: #48c197;
+  --color-ramp-4: #7ed3b2;
+  --color-ramp-5: #aee3cc;
+
+  /* 진행바 트랙 (휴식 타이머 / 부위 바) */
+  --color-track: #e3e7e1;
+  --color-track-soft: #f0f2ef;
+
+  /* 라운딩 (테마별 값 상이 — .dark에서 재정의) */
+  --radius-card: 16px; /* 일반 카드 */
+  --radius-card-lg: 22px; /* 진행중(라이브) 카드·모달 */
+  --radius-sub: 16px; /* 완료 종목 카드 등 서브카드 */
+  --radius-row: 11px; /* 세트행 */
+  --radius-well: 16px; /* 스테퍼 웰 */
+  --radius-btn: 16px; /* 주 버튼 */
+  --radius-chip: 999px; /* ±2.5 퀵칩 */
+  --radius-tag: 999px; /* 요일/진행중/PR 태그 */
+  --radius-field: 999px; /* 헤더 완료 버튼·입력류 소형 필 */
+
+  /* 그림자 */
+  --shadow-card: 0 1px 3px rgba(23, 33, 27, 0.06);
+  --shadow-live: 0 8px 24px rgba(15, 169, 111, 0.14);
+  --shadow-btn: 0 6px 16px rgba(15, 169, 111, 0.3);
+  --shadow-modal: 0 8px 24px rgba(23, 33, 27, 0.12);
+
+  /* 숫자 폰트 (테마별) + 스테퍼 값 크기 */
+  --font-numeric: "Space Grotesk", system-ui, sans-serif;
+  --text-stepper: 36px;
+}
+
+/* 다크 "IRON" — 동일 변수 재정의만으로 전체 테마 전환 */
+.dark {
+  --color-bg: #0c0b0a;
+  --color-surface: #171512;
+  --color-surface-sunken: #12100e;
+  --color-surface-2: #1e1b17;
+  --color-well: #0c0b0a;
+  --color-tabbar: #0c0b0a;
+
+  --color-line: #2a2620;
+  --color-line-dashed: #2a2620;
+  --color-hairline: #1c1916;
+
+  --color-text: #f2ede6;
+  --color-secondary: #c9c2b6;
+  --color-muted: #8a8378;
+  --color-faint: #6e675c;
+
+  --color-accent: #ff4a1f;
+  --color-accent-deep: #c2410c;
+  --color-accent-dim: #c2410c;
+  --color-accent-glow: #ff4a1f33;
+  --color-on-accent: #0c0b0a;
+
+  --color-pr: #ff4a1f;
+  --color-on-pr: #0c0b0a;
+
+  --color-danger: #f87171;
+
+  --color-hero: #171512;
+  --color-hero-text: #f2ede6;
+  --color-hero-muted: #8a8378;
+  --color-hero-accent: #ff4a1f;
+
+  --color-bar-hist-1: #2a2620;
+  --color-bar-hist-2: #3a332b;
+  --color-bar-hist-3: #4a4136;
+  --color-bar-now-from: #ff4a1f;
+  --color-bar-now-to: #c2410c;
+
+  --color-ramp-1: #ff4a1f;
+  --color-ramp-2: #e0491f;
+  --color-ramp-3: #b8431f;
+  --color-ramp-4: #8a3d24;
+  --color-ramp-5: #5c3a2c;
+
+  --color-track: #0c0b0a;
+  --color-track-soft: #0c0b0a;
+
+  --radius-card: 18px;
+  --radius-card-lg: 18px;
+  --radius-sub: 14px;
+  --radius-row: 9px;
+  --radius-well: 14px;
+  --radius-btn: 14px;
+  --radius-chip: 5px;
+  --radius-tag: 3px;
+  --radius-field: 10px;
+
+  --shadow-card: 0 0 #0000;
+  --shadow-live: 0 0 0 1px #ff4a1f33, 0 12px 30px rgba(0, 0, 0, 0.4);
+  --shadow-btn: 0 0 #0000;
+  --shadow-modal: 0 12px 30px rgba(0, 0, 0, 0.5);
+
+  --font-numeric: "Oswald", system-ui, sans-serif;
+  --text-stepper: 44px;
+}
+
+@layer base {
+  :root {
+    color-scheme: light;
+  }
+  .dark {
+    color-scheme: dark;
+  }
+  html {
+    background-color: var(--color-bg);
+  }
+  body {
+    background-color: var(--color-bg);
+    color: var(--color-text);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans KR", sans-serif;
+    -webkit-tap-highlight-color: transparent;
+    overscroll-behavior-y: none;
+  }
+  button,
+  input,
+  select,
+  textarea {
+    font: inherit;
+  }
+  button {
+    touch-action: manipulation;
+  }
+}
+
+@utility touch-target {
+  min-height: 44px;
+  min-width: 44px;
+}
+
+@utility safe-bottom {
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+/* 숫자 폰트 유틸리티 — 테마에 따라 Oswald/Space Grotesk 자동 전환 */
+@utility font-numeric {
+  font-family: var(--font-numeric);
+  font-variant-numeric: tabular-nums;
+}
