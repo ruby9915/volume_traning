@@ -41,20 +41,27 @@ function DateHeader({ date }: { date: string }) {
   );
 }
 
-// 세션 카드 — 기록 화면 완료 종목 카드 패턴 (Card sunken): 총볼륨 숫자폰트 강조 + 요약 줄 + 주부위 태그
-function SessionCard({ session }: { session: SessionSummary }) {
+// 세션 카드 — 기록 화면 완료 종목 카드 패턴 (Card sunken): 총볼륨 숫자폰트 강조 + 요약 줄 + 부위 라벨
+// 부위 라벨(§10.2)은 분할표 없이 그날 세트의 타겟에서 도출된다 ("하체·등" 형태)
+export function SessionCard({
+  session,
+  onClick,
+}: {
+  session: SessionSummary;
+  onClick?: () => void;
+}) {
   const navigate = useNavigate();
   return (
-    <Card variant="sunken" className="mb-2" onClick={() => navigate(`/history/${session.id}`)}>
+    <Card variant="sunken" className="mb-2" onClick={onClick ?? (() => navigate(`/history/${session.id}`))}>
       <div className="flex items-start justify-between gap-2">
         <p className="font-numeric text-2xl font-bold leading-tight dark:font-semibold">
           {fmtInt(session.total_volume)}
           <span className="ml-1 text-sm font-normal text-muted dark:uppercase">kg</span>
         </p>
         <span className="flex shrink-0 items-center gap-1.5">
-          {session.main_region_ko && (
+          {session.region_label && (
             <span className="rounded-tag bg-accent-glow px-2 py-0.5 text-[11px] font-bold text-accent">
-              {session.main_region_ko}
+              {session.region_label}
             </span>
           )}
           <span className="text-muted">›</span>

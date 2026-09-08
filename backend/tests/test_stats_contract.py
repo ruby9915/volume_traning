@@ -10,6 +10,7 @@ from datetime import timedelta
 
 import pytest
 
+from app.seed_data.targets import REGIONS, TARGETS
 from helpers import add_session, add_set, assert_keys, effective_today, ex_id
 
 # ---- types.ts 정본 키 집합 -------------------------------------------------
@@ -19,7 +20,7 @@ THIS_WEEK_KEYS = {
     "in_progress", "session_count", "set_count", "pr_count",
 }
 WEEK_VOLUME_POINT_KEYS = {"week_start", "volume_kg"}
-MUSCLE_SET_KEYS = {"code", "name_ko", "region", "weighted_sets"}
+MUSCLE_SET_KEYS = {"code", "name_ko", "region", "set_count"}
 PR_EVENT_KEYS = {
     "date", "exercise_id", "exercise_name_ko", "kind", "value", "weight_kg", "reps",
 }
@@ -34,7 +35,7 @@ VOLUME_KEYS = {"granularity", "points"}
 VOLUME_POINT_KEYS = {"period", "total_volume", "per_muscle", "per_region"}
 
 MUSCLES_KEYS = {"points"}
-MUSCLE_POINT_KEYS = {"code", "name_ko", "region", "volume_kg", "set_count"}
+MUSCLE_POINT_KEYS = {"code", "name_ko", "region", "level", "parent_code", "volume_kg", "set_count"}
 
 EXERCISE_STATS_KEYS = {"exercise_id", "name_ko", "points", "weight_pr", "e1rm_pr"}
 EXERCISE_POINT_KEYS = {"date", "session_id", "volume_kg", "top_weight_kg", "e1rm"}
@@ -50,11 +51,11 @@ FAMILY_KEYS = {"base_movement", "exercises", "points"}
 FAMILY_EXERCISE_KEYS = {"id", "name_ko"}
 FAMILY_POINT_KEYS = {"date", "total_volume", "top_e1rm"}
 
-MUSCLE_CODES = {
-    "chest", "back", "lower_back", "shoulders", "biceps", "triceps",
-    "forearms", "quads", "hamstrings", "glutes", "calves", "abs",
-}
-REGIONS = {"chest", "back", "shoulders", "arms", "legs", "core"}
+TARGET_KEYS = {"code", "name_ko", "region", "level", "parent_code"}
+
+MUSCLE_CODES = {t[0] for t in TARGETS if t[3] == 2}   # per_muscle 키 = 근육(level 2)
+ALL_TARGET_CODES = {t[0] for t in TARGETS}            # /stats/muscles·/targets = 전 타겟
+REGION_SET = set(REGIONS)
 
 
 # ---- fixtures -------------------------------------------------------------
@@ -75,7 +76,7 @@ def bench_id(db):
     s_cur = add_session(db, today.isoformat())
     add_set(db, s_cur, bench, 40, 5, warmup=1)
     add_set(db, s_cur, bench, 100, 10)  # weight + e1rm PR
-    add_set(db, s_cur, squat, 80, 5)  # squat PR
+    add_set(db, s_cur, squat, 80, 5, target="vastus_medialis")  # 세부 타겟 (squat PR)
     return bench
 
 
@@ -145,11 +146,10 @@ def test_summary_contract_with_data(auth_client, bench_id):
     body = res.json()
     _assert_summary_shape(body)
 
-    # 배열이 실제로 채워진 상태에서 검증했음을 보장 (빈 배열은 원소 키를 못 잡음)
     assert len(body["weekly_sparkline"]) == 8
     assert body["muscle_sets_this_week"], "이번 주 근육 세트가 비어 계약 검증이 무의미"
     assert body["recent_prs"], "PR 이벤트가 비어 계약 검증이 무의미"
-    assert len(body["recent_prs"]) <= 3  # 최근 3건
+    assert len(body["recent_prs"]) <= 3
 
     tw = body["this_week"]
     assert isinstance(tw["in_progress"], bool) and tw["in_progress"] is True
@@ -159,12 +159,12 @@ def test_summary_contract_with_data(auth_client, bench_id):
     assert tw["change_pct"] is None or isinstance(tw["change_pct"], (int, float))
 
     for m in body["muscle_sets_this_week"]:
-        assert m["code"] in MUSCLE_CODES
-        assert m["region"] in REGIONS
+        assert m["code"] in MUSCLE_CODES  # 근육 단위로 합산 (세부 코드 아님)
+        assert m["region"] in REGION_SET
+        assert isinstance(m["set_count"], int)
     for pr in body["recent_prs"]:
         assert pr["kind"] in ("weight", "e1rm")
         assert isinstance(pr["reps"], int)
-
     freq = body["frequency"]
     assert freq["days_since_last"] is None or isinstance(freq["days_since_last"], int)
 
@@ -179,7 +179,7 @@ def test_volume_contract_with_data(auth_client, bench_id, granularity):
     assert body["points"], "볼륨 포인트가 비어 계약 검증이 무의미"
     for p in body["points"]:
         assert set(p["per_muscle"]) == MUSCLE_CODES
-        assert set(p["per_region"]) == REGIONS
+        assert set(p["per_region"]) == REGION_SET
 
 
 def test_muscles_contract_with_data(auth_client, bench_id):
@@ -187,9 +187,24 @@ def test_muscles_contract_with_data(auth_client, bench_id):
     assert res.status_code == 200, res.text
     body = res.json()
     _assert_muscles_shape(body)
-    assert {p["code"] for p in body["points"]} == MUSCLE_CODES  # 12분류 전부
+    assert {p["code"] for p in body["points"]} == ALL_TARGET_CODES
     for p in body["points"]:
-        assert p["region"] in REGIONS
+        assert p["region"] in REGION_SET
+        assert p["level"] in (2, 3)
+        assert (p["parent_code"] is None) == (p["level"] == 2)
+        assert isinstance(p["set_count"], int)
+
+
+def test_targets_contract(auth_client):
+    res = auth_client.get("/api/targets")
+    assert res.status_code == 200, res.text
+    body = res.json()
+    for i, t in enumerate(body):
+        assert_keys(t, TARGET_KEYS, f"targets[{i}]")
+    assert {t["code"] for t in body} == ALL_TARGET_CODES
+    codes = {t["code"] for t in body}
+    for t in body:
+        assert t["parent_code"] is None or t["parent_code"] in codes
 
 
 def test_exercise_contract_with_data(auth_client, bench_id):
@@ -206,8 +221,7 @@ def test_prs_contract_with_data(auth_client, bench_id):
     assert res.status_code == 200, res.text
     body = res.json()
     _assert_prs_shape(body)
-    assert body["records"], "PR records가 비어 계약 검증이 무의미"
-    assert body["feed"], "PR feed가 비어 계약 검증이 무의미"
+    assert body["records"] and body["feed"]
     assert any(r["weight_pr"] is not None for r in body["records"])
 
 
@@ -216,7 +230,7 @@ def test_calendar_contract_with_data(auth_client, bench_id):
     assert res.status_code == 200, res.text
     body = res.json()
     _assert_calendar_shape(body)
-    assert body["points"], "캘린더 포인트가 비어 계약 검증이 무의미"
+    assert body["points"]
     for p in body["points"]:
         assert isinstance(p["session_count"], int)
 
@@ -227,8 +241,7 @@ def test_family_contract_with_data(auth_client, db, bench_id):
     body = res.json()
     _assert_family_shape(body)
     assert body["base_movement"] == "벤치프레스"
-    assert body["exercises"], "계열 종목이 비어 계약 검증이 무의미"
-    assert body["points"], "계열 포인트가 비어 계약 검증이 무의미"
+    assert body["exercises"] and body["points"]
     for p in body["points"]:
         assert p["top_e1rm"] is None or isinstance(p["top_e1rm"], (int, float))
 
@@ -240,18 +253,15 @@ def test_summary_contract_empty_db(auth_client):
     body = auth_client.get("/api/stats/summary").json()
     _assert_summary_shape(body)
     tw = body["this_week"]
-    assert tw["volume_kg"] == 0.0
-    assert tw["prev_volume_kg"] == 0.0
-    assert tw["change_pct"] is None  # 전주 0 → null
+    assert tw["volume_kg"] == 0.0 and tw["prev_volume_kg"] == 0.0
+    assert tw["change_pct"] is None
     assert tw["in_progress"] is True
     assert (tw["session_count"], tw["set_count"], tw["pr_count"]) == (0, 0, 0)
-    assert len(body["weekly_sparkline"]) == 8  # 빈 DB에서도 8주 채움
+    assert len(body["weekly_sparkline"]) == 8
     assert body["muscle_sets_this_week"] == []
     assert body["recent_prs"] == []
     assert body["frequency"]["days_since_last"] is None
-    assert body["totals"] == {
-        "tonnage_kg": 0.0, "session_count": 0, "set_count": 0, "rep_count": 0,
-    }
+    assert body["totals"] == {"tonnage_kg": 0.0, "session_count": 0, "set_count": 0, "rep_count": 0}
 
 
 def test_volume_contract_empty_db(auth_client):
@@ -263,25 +273,21 @@ def test_volume_contract_empty_db(auth_client):
 def test_muscles_contract_empty_db(auth_client):
     body = auth_client.get("/api/stats/muscles").json()
     _assert_muscles_shape(body)
-    # 세트가 없어도 12분류를 0으로 채워 반환 (프론트 차트가 빈 배열을 못 견딤)
-    assert {p["code"] for p in body["points"]} == MUSCLE_CODES
-    assert all(p["volume_kg"] == 0.0 and p["set_count"] == 0.0 for p in body["points"])
+    assert {p["code"] for p in body["points"]} == ALL_TARGET_CODES
+    assert all(p["volume_kg"] == 0.0 and p["set_count"] == 0 for p in body["points"])
 
 
 def test_exercise_contract_empty_db(auth_client, db):
     bench = ex_id(db, "벤치프레스")
     body = auth_client.get(f"/api/stats/exercises/{bench}").json()
     _assert_exercise_shape(body)
-    assert body["points"] == []
-    assert body["weight_pr"] is None
-    assert body["e1rm_pr"] is None
+    assert body["points"] == [] and body["weight_pr"] is None and body["e1rm_pr"] is None
 
 
 def test_prs_contract_empty_db(auth_client):
     body = auth_client.get("/api/stats/prs").json()
     _assert_prs_shape(body)
-    assert body["records"] == []
-    assert body["feed"] == []
+    assert body["records"] == [] and body["feed"] == []
 
 
 def test_calendar_contract_empty_db(auth_client):
@@ -291,10 +297,7 @@ def test_calendar_contract_empty_db(auth_client):
 
 
 def test_family_contract_empty_db(auth_client):
-    # 세트가 없어도 계열 명부는 시드에서 나온다 — points만 빈 배열
-    body = auth_client.get(
-        "/api/stats/family", params={"base_movement": "벤치프레스"}
-    ).json()
+    body = auth_client.get("/api/stats/family", params={"base_movement": "벤치프레스"}).json()
     _assert_family_shape(body)
-    assert len(body["exercises"]) == 5
+    assert len(body["exercises"]) >= 5
     assert body["points"] == []

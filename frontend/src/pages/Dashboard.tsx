@@ -28,6 +28,13 @@ import ErrorRetry from "../components/ErrorRetry";
 import Spinner from "../components/Spinner";
 
 type PeriodMode = "weekly" | "monthly";
+/** §10.2 부위별 분배 드릴다운 단계 — 부위(6) → 근육 → 세부 */
+type DistLevel = "region" | "muscle" | "detail";
+const DIST_LEVELS: { key: DistLevel; label: string }[] = [
+  { key: "region", label: "부위" },
+  { key: "muscle", label: "근육" },
+  { key: "detail", label: "세부" },
+];
 
 /**
  * 종목 진행 드롭다운 선택 — §3.6: 계열(base_movement) 항목 추가.
@@ -43,9 +50,7 @@ const FAMILY_PREFIX = "family:";
 const REGION_ORDER = Object.keys(REGION_NAMES_KO) as Region[];
 
 /**
- * 부위별 분배 램프 — 시안은 5단계(--color-ramp-1..5), 우리 region은 6개라
- * 마지막 단계를 같은 톤 방향으로 1단계 연장(코어 포함 6행).
- * 1..5는 CSS 변수를 그대로 참조하고, 6번째만 테마 분기.
+ * 부위별 분배 램프 — 시안은 5단계(--color-ramp-1..5). 6번째 이후는 마지막 톤을 1단계 연장.
  */
 const RAMP_VARS = [1, 2, 3, 4, 5].map((n) => `var(--color-ramp-${n})`);
 const RAMP_6 = { light: "#d3efe2", dark: "#443027" } as const;
@@ -284,6 +289,7 @@ export default function Dashboard() {
   const [includeWarmup, setIncludeWarmup] = useState(false);
   const [selection, setSelection] = useState<ProgressSelection | null>(null);
   const [selectedBar, setSelectedBar] = useState<number | null>(null);
+  const [distLevel, setDistLevel] = useState<DistLevel>("region");
   const theme = useResolvedTheme();
   const lineTheme = LINE_CHART_THEME[theme];
 
@@ -322,7 +328,6 @@ export default function Dashboard() {
   });
 
   // §3.6 계열 드롭다운 재료: 같은 base_movement의 활성 종목 2개 이상일 때만 노출
-  // (구현 결정, SETTING.MD §3.6 반영 — 1종뿐인 계열은 단일 종목 그래프와 동일해 항목만 늘린다)
   const exercisesQ = useQuery({ queryKey: ["exercises"], queryFn: () => fetchExercises() });
   const familyOptions = useMemo(() => {
     const counts = new Map<string, number>();
@@ -357,16 +362,25 @@ export default function Dashboard() {
     [periods, mode, byPeriod],
   );
 
-  // 부위별 분배: 근육 단위 가중 볼륨을 region 6개로 합산, 볼륨 내림차순
-  const regionDist = useMemo(() => {
-    const sums = Object.fromEntries(REGION_ORDER.map((r) => [r, 0])) as Record<Region, number>;
-    for (const p of musclesQ.data?.points ?? []) sums[p.region] += p.volume_kg;
-    return REGION_ORDER.map((r) => ({ region: r, name: REGION_NAMES_KO[r], volume: sums[r] })).sort(
-      (a, b) => b.volume - a.volume,
-    );
-  }, [musclesQ.data]);
-  const maxRegion = Math.max(...regionDist.map((d) => d.volume), 1);
-  const hasRegion = regionDist.some((d) => d.volume > 0);
+  // 부위별 분배 (§10.2 100% 귀속): 부위 = 근육(level 2) 합, 근육·세부 = 볼륨 있는 행만 상위 12
+  const distRows = useMemo(() => {
+    const pts = musclesQ.data?.points ?? [];
+    if (distLevel === "region") {
+      const sums = Object.fromEntries(REGION_ORDER.map((r) => [r, 0])) as Record<Region, number>;
+      for (const p of pts) if (p.level === 2) sums[p.region] += p.volume_kg;
+      return REGION_ORDER.map((r) => ({ key: r, name: REGION_NAMES_KO[r], volume: sums[r] })).sort(
+        (a, b) => b.volume - a.volume,
+      );
+    }
+    const level = distLevel === "muscle" ? 2 : 3;
+    return pts
+      .filter((p) => p.level === level && p.volume_kg > 0)
+      .sort((a, b) => b.volume_kg - a.volume_kg)
+      .slice(0, 12)
+      .map((p) => ({ key: p.code, name: p.name_ko, volume: p.volume_kg }));
+  }, [musclesQ.data, distLevel]);
+  const maxDist = Math.max(...distRows.map((d) => d.volume), 1);
+  const hasDist = distRows.some((d) => d.volume > 0);
 
   const exerciseRows = useMemo(
     () =>
@@ -523,25 +537,41 @@ export default function Dashboard() {
           ))}
         </div>
 
-        {/* 부위별 분배 — region 6개(코어 포함), 볼륨순 램프 */}
+        {/* 부위별 분배 — 타겟 100% 귀속, 부위 → 근육 → 세부 드릴다운 */}
         <Card className={musclesQ.isPlaceholderData ? "opacity-60" : ""}>
-          <CardTitle title="부위별 분배" note={rangeNote} />
+          <div className="mb-3 flex items-baseline justify-between gap-2">
+            <CardTitle title="부위별 분배" note={rangeNote} />
+            <div className="-mt-4 flex rounded-full bg-well p-0.5 dark:rounded-[7px]">
+              {DIST_LEVELS.map((l) => (
+                <button
+                  key={l.key}
+                  type="button"
+                  onClick={() => setDistLevel(l.key)}
+                  className={`rounded-full px-2.5 py-1 text-[11px] font-semibold dark:rounded-[6px] ${
+                    distLevel === l.key ? "bg-surface text-text shadow-card" : "text-muted"
+                  }`}
+                >
+                  {l.label}
+                </button>
+              ))}
+            </div>
+          </div>
           {musclesQ.isPending ? (
             <Loading />
           ) : musclesQ.isError ? (
             <ErrorRetry onRetry={() => musclesQ.refetch()} />
-          ) : !hasRegion ? (
+          ) : !hasDist ? (
             <EmptyNote text="아직 기록이 없습니다" />
           ) : (
             <div className="space-y-3">
-              {regionDist.map((d, i) => (
-                <div key={d.region} className="flex items-center gap-3">
-                  <span className="w-[34px] shrink-0 text-sm font-medium">{d.name}</span>
+              {distRows.map((d, i) => (
+                <div key={d.key} className="flex items-center gap-3">
+                  <span className="w-[72px] shrink-0 truncate text-sm font-medium">{d.name}</span>
                   <div className="h-2.5 flex-1 overflow-hidden rounded-full bg-track-soft dark:h-3 dark:rounded-[3px]">
                     <div
                       className="h-full rounded-full dark:rounded-[3px]"
                       style={{
-                        width: `${(d.volume / maxRegion) * 100}%`,
+                        width: `${(d.volume / maxDist) * 100}%`,
                         background: i < 5 ? RAMP_VARS[i] : RAMP_6[theme],
                       }}
                     />
@@ -586,7 +616,7 @@ export default function Dashboard() {
           )}
         </Card>
 
-        {/* 종목별 진행 — 시안 외 기존 기능 유지(토큰 재스킨). §3.6: 계열 합산 항목 추가 */}
+        {/* 종목별 진행 — §3.6: 계열 합산 항목 추가 */}
         <Card
           className={
             (familyBase !== null ? familyQ.isPlaceholderData : exerciseQ.isPlaceholderData)

@@ -17,10 +17,10 @@ import {
 } from "../api/client";
 import type {
   Exercise,
-  MuscleCode,
   OutboxItem,
   SessionDetail as SessionDetailData,
   SessionExerciseGroup,
+  TargetCode,
 } from "../api/types";
 import Button from "../components/Button";
 import Card from "../components/Card";
@@ -30,10 +30,11 @@ import Modal from "../components/Modal";
 import Spinner from "../components/Spinner";
 import Stepper from "../components/Stepper";
 import ExercisePicker from "../components/exercise-picker/ExercisePicker";
-import { IntentChipButton, IntentChips } from "../components/intent/IntentChips";
-import IntentBackfillModal from "../components/intent/IntentBackfillModal";
-import IntentSheet from "../components/intent/IntentSheet";
-import { useIntentBackfill } from "../components/intent/useIntentBackfill";
+import TargetBackfillModal from "../components/target/TargetBackfillModal";
+import TargetChipButton from "../components/target/TargetChipButton";
+import TargetSheet from "../components/target/TargetSheet";
+import { useTargetBackfill } from "../components/target/useTargetBackfill";
+import { useTargets } from "../hooks/useTargets";
 import { useAppStore } from "../store";
 import { formatFullDate, todayStr } from "../utils/date";
 import { fmtInt } from "../utils/format";
@@ -43,7 +44,7 @@ interface SetFormValues {
   weight_kg: number;
   reps: number;
   is_warmup: boolean;
-  intent: MuscleCode | null; // §3.7A — null = 종목 기본 매핑
+  target: TargetCode; // §10.2 세트 타겟 (항상 값 있음)
 }
 
 function groupVolume(g: SessionExerciseGroup): number {
@@ -51,29 +52,29 @@ function groupVolume(g: SessionExerciseGroup): number {
 }
 
 // §5.3: 새 종목 첫 세트에 임의 기본 중량을 넣지 않는다
-const EMPTY_SET: SetFormValues = { weight_kg: 0, reps: 8, is_warmup: false, intent: null };
-
-// cardIntent: 카드 의도 칩에서 명시 선택된 값(§3.7A sticky, null=기본).
-// undefined = 칩 미조작 → 마지막 세트의 intent 상속(기존 동작)
-function prefillFrom(
-  g: SessionExerciseGroup,
-  cardIntent?: MuscleCode | null,
-): SetFormValues {
-  const last = g.sets[g.sets.length - 1];
-  const intent = cardIntent !== undefined ? cardIntent : (last?.intent_muscle ?? null);
-  return last
-    ? { weight_kg: last.weight_kg, reps: last.reps, is_warmup: false, intent }
-    : { ...EMPTY_SET, intent };
+function emptySet(target: TargetCode): SetFormValues {
+  return { weight_kg: 0, reps: 8, is_warmup: false, target };
 }
 
-// §3.7A 소급 적용 대상 — 세션 상세의 세트는 전부 저장된 세트라 id만 있다
-interface IntentBackfillTarget {
-  code: MuscleCode | null;
+// cardTarget: 카드 타겟 칩에서 명시 선택된 값(§10.2 sticky). undefined = 칩 미조작 →
+// 마지막 세트의 타겟 상속(없으면 종목 기본)
+function prefillFrom(g: SessionExerciseGroup, cardTarget?: TargetCode): SetFormValues {
+  const last = g.sets[g.sets.length - 1];
+  const target = cardTarget ?? last?.target ?? g.default_target;
+  return last
+    ? { weight_kg: last.weight_kg, reps: last.reps, is_warmup: false, target }
+    : emptySet(target);
+}
+
+// §10.2 소급 적용 대상 — 세션 상세의 세트는 전부 저장된 세트라 id만 있다
+interface TargetBackfillTarget {
+  code: TargetCode;
   ids: number[];
 }
 
 function SetEditor({
   initial,
+  defaultTarget,
   saveLabel,
   busy,
   onSave,
@@ -81,6 +82,7 @@ function SetEditor({
   onDelete,
 }: {
   initial: SetFormValues;
+  defaultTarget: TargetCode;
   saveLabel: string;
   busy: boolean;
   onSave: (v: SetFormValues) => void;
@@ -89,6 +91,7 @@ function SetEditor({
 }) {
   const weightStep = useAppStore((s) => s.weightStep);
   const [values, setValues] = useState(initial);
+  const [sheetOpen, setSheetOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const submit = () => {
@@ -122,19 +125,18 @@ function SetEditor({
           onChange={(r) => setValues((v) => ({ ...v, reps: r }))}
         />
       </div>
-      <label className="mt-3 flex items-center justify-center gap-2 text-sm text-muted">
-        <input
-          type="checkbox"
-          className="h-5 w-5 accent-accent"
-          checked={values.is_warmup}
-          onChange={(e) => setValues((v) => ({ ...v, is_warmup: e.target.checked }))}
-        />
-        웜업 세트
-      </label>
-      <IntentChips
-        value={values.intent}
-        onChange={(intent) => setValues((v) => ({ ...v, intent }))}
-      />
+      <div className="mt-3 flex items-center justify-between gap-3">
+        <label className="flex items-center gap-2 text-sm text-muted">
+          <input
+            type="checkbox"
+            className="h-5 w-5 accent-accent"
+            checked={values.is_warmup}
+            onChange={(e) => setValues((v) => ({ ...v, is_warmup: e.target.checked }))}
+          />
+          웜업 세트
+        </label>
+        <TargetChipButton value={values.target} defaultCode={defaultTarget} onClick={() => setSheetOpen(true)} />
+      </div>
       {error && <p className="mt-2 text-center text-sm text-danger">{error}</p>}
       <div className="mt-3 flex gap-2">
         {onDelete && (
@@ -149,6 +151,16 @@ function SetEditor({
           {busy ? "저장 중…" : saveLabel}
         </Button>
       </div>
+      <TargetSheet
+        open={sheetOpen}
+        value={values.target}
+        defaultCode={defaultTarget}
+        onClose={() => setSheetOpen(false)}
+        onSelect={(code) => {
+          setValues((v) => ({ ...v, target: code }));
+          setSheetOpen(false);
+        }}
+      />
     </div>
   );
 }
@@ -303,7 +315,7 @@ function NewSessionEditor() {
         weight_kg: v.weight_kg,
         reps: v.reps,
         is_warmup: v.is_warmup,
-        intent_muscle: v.intent ?? undefined,
+        target: v.target,
         // 첫 세트만 새 세션 생성 — 큐 대기 중 추가 세트는 같은 날짜 lazy 귀속 (flush 순서 보존)
         new_session: sessionRequestedRef.current ? undefined : true,
       });
@@ -379,7 +391,8 @@ function NewSessionEditor() {
         <Card variant="sunken" className="mb-3">
           <h2 className="font-bold">{picked.name_ko}</h2>
           <SetEditor
-            initial={EMPTY_SET}
+            initial={emptySet(picked.default_target)}
+            defaultTarget={picked.default_target}
             saveLabel="세트 저장"
             busy={busy}
             onSave={(v) => void handleSave(v)}
@@ -407,6 +420,7 @@ function NewSessionEditor() {
 function ExistingSessionDetail({ sessionIdParam }: { sessionIdParam: string }) {
   const id = Number(sessionIdParam);
   const navigate = useNavigate();
+  const { nameOf } = useTargets();
 
   const [data, setData] = useState<SessionDetailData | null>(null);
   const [notFound, setNotFound] = useState(!Number.isFinite(id));
@@ -421,10 +435,10 @@ function ExistingSessionDetail({ sessionIdParam }: { sessionIdParam: string }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [queuedNotice, setQueuedNotice] = useState(false);
 
-  // §3.7A 카드 단위 sticky intent (기록·세션상세 공통 UX) — 이 화면 방문 동안만 유지.
-  // 값 존재 = 칩에서 명시 선택(null=기본), 부재 = 미조작(마지막 세트 intent 상속)
-  const [cardIntents, setCardIntents] = useState<Partial<Record<number, MuscleCode | null>>>({});
-  const [intentSheetFor, setIntentSheetFor] = useState<number | null>(null);
+  // §10.2 카드 단위 sticky 타겟 (기록·세션상세 공통 UX) — 이 화면 방문 동안만 유지.
+  // 값 존재 = 칩에서 명시 선택, 부재 = 미조작(마지막 세트 타겟 상속)
+  const [cardTargets, setCardTargets] = useState<Partial<Record<number, TargetCode>>>({});
+  const [targetSheetFor, setTargetSheetFor] = useState<number | null>(null);
 
   // §3.7B 종목 추가용 — Log와 React Query 캐시 공유
   const exercisesQuery = useQuery({ queryKey: ["exercises"], queryFn: () => fetchExercises() });
@@ -461,12 +475,11 @@ function ExistingSessionDetail({ sessionIdParam }: { sessionIdParam: string }) {
     setBusy(true);
     setActionError(null);
     try {
-      // §3.7A: intent_muscle 명시적 null = 기본으로 되돌리기
       await updateSet(setId, {
         weight_kg: v.weight_kg,
         reps: v.reps,
         is_warmup: v.is_warmup,
-        intent_muscle: v.intent,
+        target: v.target,
       });
       setEditingSetId(null);
       await reload();
@@ -503,7 +516,7 @@ function ExistingSessionDetail({ sessionIdParam }: { sessionIdParam: string }) {
         weight_kg: v.weight_kg,
         reps: v.reps,
         is_warmup: v.is_warmup,
-        intent_muscle: v.intent ?? undefined,
+        target: v.target,
         session_id: data!.id,
       });
       setAddingExerciseId(null);
@@ -517,35 +530,32 @@ function ExistingSessionDetail({ sessionIdParam }: { sessionIdParam: string }) {
     }
   };
 
-  // 카드 칩 표시값 = 다음 "세트 추가"에 적용될 intent (명시 선택 우선, 없으면 마지막 세트 상속)
-  const effectiveIntent = (g: SessionExerciseGroup): MuscleCode | null => {
-    const explicit = cardIntents[g.exercise_id];
-    if (explicit !== undefined) return explicit;
-    return g.sets[g.sets.length - 1]?.intent_muscle ?? null;
-  };
+  // 카드 칩 표시값 = 다음 "세트 추가"에 적용될 타겟 (명시 선택 우선, 없으면 마지막 세트 상속, 없으면 기본)
+  const effectiveTarget = (g: SessionExerciseGroup): TargetCode =>
+    cardTargets[g.exercise_id] ?? g.sets[g.sets.length - 1]?.target ?? g.default_target;
 
-  // §3.7A 소급 적용 실행 — 설정 분기·확인 다이얼로그는 useIntentBackfill이 담당 (Log와 공용)
-  const backfill = useIntentBackfill(async ({ code, ids }: IntentBackfillTarget) => {
+  // §10.2 소급 적용 실행 — 설정 분기·확인 다이얼로그는 useTargetBackfill이 담당 (Log와 공용)
+  const backfill = useTargetBackfill(async ({ code, ids }: TargetBackfillTarget) => {
     setBusy(true);
     setActionError(null);
     try {
       for (const setId of ids) {
-        await updateSet(setId, { intent_muscle: code });
+        await updateSet(setId, { target: code });
       }
       await reload();
     } catch (e) {
-      setActionError(apiErrorMessage(e, "의도 적용에 실패했습니다."));
+      setActionError(apiErrorMessage(e, "타겟 적용에 실패했습니다."));
     } finally {
       setBusy(false);
     }
   });
 
-  // §3.7A 의도 선택 (카드 단위 sticky): 이후 추가 세트에 자동 적용,
+  // §10.2 타겟 선택 (카드 단위 sticky): 이후 추가 세트에 자동 적용,
   // 이미 저장된 이 카드 세트는 설정(물어보기/항상 적용/적용 안 함)에 따라 소급
-  const applyCardIntent = async (g: SessionExerciseGroup, code: MuscleCode | null) => {
-    setIntentSheetFor(null);
-    setCardIntents((m) => ({ ...m, [g.exercise_id]: code }));
-    const ids = g.sets.filter((s) => s.intent_muscle !== code).map((s) => s.id);
+  const applyCardTarget = async (g: SessionExerciseGroup, code: TargetCode) => {
+    setTargetSheetFor(null);
+    setCardTargets((m) => ({ ...m, [g.exercise_id]: code }));
+    const ids = g.sets.filter((s) => s.target !== code).map((s) => s.id);
     if (ids.length === 0) return;
     await backfill.request({ code, ids });
   };
@@ -611,7 +621,7 @@ function ExistingSessionDetail({ sessionIdParam }: { sessionIdParam: string }) {
   }
 
   const totalSets = data.exercises.reduce((n, g) => n + g.sets.length, 0);
-  const sheetGroup = data.exercises.find((x) => x.exercise_id === intentSheetFor) ?? null;
+  const sheetGroup = data.exercises.find((x) => x.exercise_id === targetSheetFor) ?? null;
 
   return (
     <main className="mx-auto max-w-[720px] p-4">
@@ -645,9 +655,9 @@ function ExistingSessionDetail({ sessionIdParam }: { sessionIdParam: string }) {
       <Card className="mb-4">
         <div className="flex items-center justify-between">
           <span className="text-xs font-semibold text-muted">총 볼륨</span>
-          {data.main_region_ko && (
+          {data.region_label && (
             <span className="rounded-tag bg-accent-glow px-2 py-0.5 text-[11px] font-bold text-accent">
-              {data.main_region_ko}
+              {data.region_label}
             </span>
           )}
         </div>
@@ -682,10 +692,11 @@ function ExistingSessionDetail({ sessionIdParam }: { sessionIdParam: string }) {
           {/* 기록 화면 완료 카드 패턴: 종목명 + 우측 세트수 뱃지(라이트 ✓ N accent / 다크 N SETS) */}
           <div className="flex items-center justify-between gap-2">
             <h2 className="min-w-0 truncate font-bold">{g.name_ko}</h2>
-            {/* §3.7A 의도 칩 (기록·세션상세 공통) — 탭 → 12분류 시트, 이후 추가 세트에 sticky */}
-            <IntentChipButton
-              value={effectiveIntent(g)}
-              onClick={() => setIntentSheetFor(g.exercise_id)}
+            {/* §10.2 타겟 칩 (기록·세션상세 공통) — 탭 → 3단계 시트, 이후 추가 세트에 sticky */}
+            <TargetChipButton
+              value={effectiveTarget(g)}
+              defaultCode={g.default_target}
+              onClick={() => setTargetSheetFor(g.exercise_id)}
             />
             <span className="flex shrink-0 items-baseline gap-2 font-numeric text-sm text-muted">
               {fmtInt(groupVolume(g))} kg
@@ -700,12 +711,8 @@ function ExistingSessionDetail({ sessionIdParam }: { sessionIdParam: string }) {
               editingSetId === s.id ? (
                 <li key={s.id}>
                   <SetEditor
-                    initial={{
-                      weight_kg: s.weight_kg,
-                      reps: s.reps,
-                      is_warmup: s.is_warmup,
-                      intent: s.intent_muscle,
-                    }}
+                    initial={{ weight_kg: s.weight_kg, reps: s.reps, is_warmup: s.is_warmup, target: s.target }}
+                    defaultTarget={g.default_target}
                     saveLabel="저장"
                     busy={busy}
                     onSave={(v) => void handleUpdate(s.id, v)}
@@ -736,10 +743,10 @@ function ExistingSessionDetail({ sessionIdParam }: { sessionIdParam: string }) {
                         웜업
                       </span>
                     )}
-                    {/* §3.7A intent 지정 세트 — 근육명 소형 뱃지 */}
-                    {s.intent_muscle_ko && (
+                    {/* §10.2 종목 기본과 다른 타겟만 뱃지 */}
+                    {s.target !== g.default_target && (
                       <span className="rounded-tag bg-accent-glow px-1.5 py-0.5 text-[10px] font-semibold text-accent">
-                        {s.intent_muscle_ko}
+                        {nameOf(s.target)}
                       </span>
                     )}
                     <span className="shrink-0 font-numeric text-sm text-muted">
@@ -752,7 +759,8 @@ function ExistingSessionDetail({ sessionIdParam }: { sessionIdParam: string }) {
           </ul>
           {addingExerciseId === g.exercise_id ? (
             <SetEditor
-              initial={prefillFrom(g, cardIntents[g.exercise_id])}
+              initial={prefillFrom(g, cardTargets[g.exercise_id])}
+              defaultTarget={g.default_target}
               saveLabel="세트 추가"
               busy={busy}
               onSave={(v) => void handleAdd(g.exercise_id, v)}
@@ -779,7 +787,8 @@ function ExistingSessionDetail({ sessionIdParam }: { sessionIdParam: string }) {
         <Card variant="sunken" className="mb-3">
           <h2 className="font-bold">{newExercise.name_ko}</h2>
           <SetEditor
-            initial={EMPTY_SET}
+            initial={emptySet(newExercise.default_target)}
+            defaultTarget={newExercise.default_target}
             saveLabel="세트 추가"
             busy={busy}
             onSave={(v) => void handleAdd(newExercise.id, v)}
@@ -797,19 +806,20 @@ function ExistingSessionDetail({ sessionIdParam }: { sessionIdParam: string }) {
         onSelect={handlePickExercise}
       />
 
-      {/* §3.7A 의도 주동근 선택 시트 — Log와 동일 12분류, 카드 단위 sticky */}
-      <IntentSheet
-        open={intentSheetFor != null}
-        value={sheetGroup ? effectiveIntent(sheetGroup) : null}
+      {/* §10.2 타겟 부위 선택 시트 — Log와 동일, 카드 단위 sticky */}
+      <TargetSheet
+        open={targetSheetFor != null}
+        value={sheetGroup ? effectiveTarget(sheetGroup) : null}
+        defaultCode={sheetGroup?.default_target}
         description="선택하면 이 종목의 이후 추가 세트에 자동 적용됩니다."
-        onClose={() => setIntentSheetFor(null)}
+        onClose={() => setTargetSheetFor(null)}
         onSelect={(code) => {
-          if (sheetGroup) void applyCardIntent(sheetGroup, code);
+          if (sheetGroup) void applyCardTarget(sheetGroup, code);
         }}
       />
 
-      {/* §3.7A 소급 적용 확인 — 설정 "물어보기"일 때만 열린다 */}
-      <IntentBackfillModal
+      {/* §10.2 소급 적용 확인 — 설정 "물어보기"일 때만 열린다 */}
+      <TargetBackfillModal
         open={backfill.prompt != null}
         count={backfill.prompt?.ids.length ?? 0}
         code={backfill.prompt?.code ?? null}

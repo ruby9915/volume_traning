@@ -1,51 +1,53 @@
+// §10.1 회원가입 — 지인 대상 최소 폼. 가입 즉시 로그인된다.
 import { useState, type FormEvent } from "react";
 import { Link, Navigate, useNavigate } from "react-router-dom";
-import { ApiError, getToken, login, tokenRemainingDays } from "../api/client";
+import { ApiError, getToken, register } from "../api/client";
 import Button from "../components/Button";
 import Spinner from "../components/Spinner";
+import { AUTH_INPUT_CLS } from "./Login";
 
-// §4.1: 토큰 잔여 수명이 7일 미만이면 재로그인 유도. null = 배너 불필요.
-export function useReloginBanner(): { days: number; expired: boolean } | null {
-  const [days] = useState(() => tokenRemainingDays());
-  if (days == null || days >= 7) return null;
-  return { days: Math.max(0, Math.floor(days)), expired: days <= 0 };
-}
+const USERNAME_RE = /^[A-Za-z0-9_.-]{2,32}$/;
 
 function errorMessage(e: unknown): string {
   if (e instanceof ApiError) {
-    if (e.status === 401) return "아이디 또는 비밀번호가 올바르지 않습니다.";
+    if (e.status === 409) return "이미 사용 중인 아이디입니다.";
+    if (typeof e.detail === "string") return e.detail;
     return `오류가 발생했습니다. (HTTP ${e.status})`;
   }
   return "서버에 연결할 수 없습니다. 네트워크를 확인해 주세요.";
 }
 
-export const AUTH_INPUT_CLS =
-  "touch-target w-full rounded-btn border border-line bg-surface px-4 text-base shadow-card placeholder:text-faint focus:border-accent focus:outline-none disabled:opacity-40";
-
-export default function Login() {
+export default function Register() {
   const navigate = useNavigate();
-  const banner = useReloginBanner();
   const [username, setUsername] = useState("");
+  const [displayName, setDisplayName] = useState("");
   const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
-  // 유효 토큰 보유(잔여 7일 이상 또는 만료 정보 없음) → 자동 로그인
-  if (getToken() && banner == null) {
-    return <Navigate to="/log" replace />;
-  }
+  if (getToken()) return <Navigate to="/log" replace />;
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     if (loading) return;
-    if (!username.trim() || !password) {
-      setError("아이디와 비밀번호를 입력해 주세요.");
+    const u = username.trim();
+    if (!USERNAME_RE.test(u)) {
+      setError("아이디는 영문·숫자·._- 2~32자로 입력해 주세요.");
+      return;
+    }
+    if (password.length < 4) {
+      setError("비밀번호는 4자 이상이어야 합니다.");
+      return;
+    }
+    if (password !== confirm) {
+      setError("비밀번호 확인이 일치하지 않습니다.");
       return;
     }
     setLoading(true);
     setError(null);
     try {
-      await login(username.trim(), password);
+      await register({ username: u, password, display_name: displayName.trim() || undefined });
       navigate("/log", { replace: true });
     } catch (err) {
       setError(errorMessage(err));
@@ -58,16 +60,8 @@ export default function Login() {
       <p className="text-center font-numeric text-[13px] font-semibold tracking-[3px] text-accent uppercase">
         Volume
       </p>
-      <h1 className="mt-1 text-center text-2xl font-extrabold">볼륨 트래킹</h1>
-      <p className="mt-2 text-center text-sm text-muted">아이디와 비밀번호로 로그인하세요</p>
-
-      {banner != null && (
-        <div className="mt-6 rounded-card border border-accent/30 bg-accent/10 px-4 py-3 text-sm text-accent">
-          {banner.expired
-            ? "로그인이 만료되었습니다. 다시 로그인해 주세요."
-            : `로그인 유효기간이 ${banner.days}일 남았습니다. 지금 재로그인하면 90일 연장됩니다.`}
-        </div>
-      )}
+      <h1 className="mt-1 text-center text-2xl font-extrabold">회원가입</h1>
+      <p className="mt-2 text-center text-sm text-muted">아이디는 로그인에만 쓰이고 다른 사용자에게 보이지 않습니다</p>
 
       <form onSubmit={handleSubmit} className="mt-6 flex flex-col gap-3">
         <input
@@ -77,12 +71,22 @@ export default function Login() {
             setUsername(e.target.value);
             setError(null);
           }}
-          placeholder="아이디"
+          placeholder="아이디 (영문·숫자, 2~32자)"
           autoComplete="username"
           autoCapitalize="none"
           autoFocus
           disabled={loading}
           aria-label="아이디"
+          className={AUTH_INPUT_CLS}
+        />
+        <input
+          type="text"
+          value={displayName}
+          onChange={(e) => setDisplayName(e.target.value)}
+          placeholder="표시 이름 (선택)"
+          autoComplete="nickname"
+          disabled={loading}
+          aria-label="표시 이름"
           className={AUTH_INPUT_CLS}
         />
         <input
@@ -92,10 +96,23 @@ export default function Login() {
             setPassword(e.target.value);
             setError(null);
           }}
-          placeholder="비밀번호"
-          autoComplete="current-password"
+          placeholder="비밀번호 (4자 이상)"
+          autoComplete="new-password"
           disabled={loading}
           aria-label="비밀번호"
+          className={AUTH_INPUT_CLS}
+        />
+        <input
+          type="password"
+          value={confirm}
+          onChange={(e) => {
+            setConfirm(e.target.value);
+            setError(null);
+          }}
+          placeholder="비밀번호 확인"
+          autoComplete="new-password"
+          disabled={loading}
+          aria-label="비밀번호 확인"
           className={AUTH_INPUT_CLS}
         />
 
@@ -109,17 +126,17 @@ export default function Login() {
           {loading ? (
             <span className="flex items-center justify-center gap-2">
               <Spinner size="sm" />
-              로그인 중…
+              가입 중…
             </span>
           ) : (
-            "로그인"
+            "가입하고 시작"
           )}
         </Button>
       </form>
       <p className="mt-6 text-center text-sm text-muted">
-        계정이 없나요?{" "}
-        <Link to="/register" className="font-semibold text-accent">
-          회원가입
+        이미 계정이 있나요?{" "}
+        <Link to="/login" className="font-semibold text-accent">
+          로그인
         </Link>
       </p>
     </main>

@@ -2,7 +2,10 @@ import { Navigate, Outlet, Route, Routes, useLocation } from "react-router-dom";
 import { getToken } from "./api/client";
 import TabBar from "./components/TabBar";
 import ErrorBoundary from "./components/ErrorBoundary";
+import { useMe } from "./hooks/useMe";
+import Admin from "./pages/Admin";
 import Login from "./pages/Login";
+import Register from "./pages/Register";
 import Log from "./pages/Log";
 import Dashboard from "./pages/Dashboard";
 import History from "./pages/History";
@@ -12,6 +15,14 @@ import Settings from "./pages/Settings";
 
 function RequireAuth() {
   if (!getToken()) return <Navigate to="/login" replace />;
+  return <Outlet />;
+}
+
+/** §10.5 관리자 전용 — 일반 사용자는 기록 화면으로 (API도 403으로 막는다) */
+function RequireAdmin() {
+  const me = useMe();
+  if (me.isLoading) return null;
+  if (!me.data?.is_admin) return <Navigate to="/log" replace />;
   return <Outlet />;
 }
 
@@ -32,6 +43,7 @@ export default function App() {
   return (
     <Routes>
       <Route path="/login" element={<Login />} />
+      <Route path="/register" element={<Register />} />
       <Route element={<RequireAuth />}>
         <Route element={<Shell />}>
           <Route path="/" element={<Navigate to="/log" replace />} />
@@ -43,6 +55,10 @@ export default function App() {
           <Route path="/history/:sessionId" element={<SessionDetail />} />
           <Route path="/exercises" element={<Exercises />} />
           <Route path="/settings" element={<Settings />} />
+          <Route element={<RequireAdmin />}>
+            <Route path="/admin" element={<Admin />} />
+            <Route path="/admin/:userId" element={<Admin />} />
+          </Route>
         </Route>
       </Route>
       <Route path="*" element={<Navigate to="/log" replace />} />

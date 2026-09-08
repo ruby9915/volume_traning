@@ -11,7 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from . import auth, backup
 from .config import get_settings
 from .db import init_db
-from .routers import exercises, sessions, stats
+from .routers import admin, catalog, exercises, sessions, stats
 
 logger = logging.getLogger("app")
 
@@ -53,23 +53,27 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="운동 볼륨 트래킹", lifespan=lifespan)
 
+# auth 라우터는 공개(login/register)와 보호(me/password) 경로를 함께 갖고 경로별로 의존성을 건다
 app.include_router(auth.router)
+# 핸들러마다 require_auth로 사용자를 받지만, 라우터 수준에서도 한 번 더 걸어 빠뜨림을 막는다
 _protected = [Depends(auth.require_auth)]
+app.include_router(catalog.router, dependencies=_protected)
 app.include_router(exercises.router, dependencies=_protected)
 app.include_router(sessions.router, dependencies=_protected)
 app.include_router(stats.router, dependencies=_protected)
+app.include_router(admin.router)  # require_admin은 라우터 자체에 걸려 있다
 
 
 @app.middleware("http")
 async def mark_data_write(request: Request, call_next):
-    """데이터를 바꾸는 API가 성공하면 자동 백업 대상으로 표시 (§7.4)."""
+    """데이터를 바꾸는 API가 성공하면 자동 백업 대상으로 표시 (§7.4). 가입·비밀번호 변경 포함."""
     response = await call_next(request)
     path = request.url.path
     if (
         request.method in {"POST", "PATCH", "PUT", "DELETE"}
         and response.status_code < 400
         and path.startswith("/api/")
-        and not path.startswith("/api/auth")
+        and not path.startswith("/api/auth/login")
         and not path.startswith("/api/export")
     ):
         backup.mark_dirty()

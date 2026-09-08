@@ -1,28 +1,29 @@
-// 종목 선택 bottom sheet — Log에서 추출한 공용 컴포넌트 (§3.7B: 세션 상세에서도 재사용)
-// 최근 칩 · 부위 그룹 · 검색(name_ko/name_en/aliases/속성값 haystack, §3.6) · 새 종목 승격 포함.
+// 종목 선택 bottom sheet (v2, §10.3) — 즐겨찾기 → 최근 사용 → 검색/부위별 탐색.
+// 내장 라이브러리가 수백 종이라 전체 목록은 검색이나 부위 펼치기로만 연다.
 // 최근 사용 목록은 내부에서 localStorage로 관리: open 시 read, 선택 시 push.
 // 시트는 선택 후 자동으로 닫히지 않는다 — 호출측이 onSelect에서 닫기(open=false) 처리.
 
-import { useEffect, useState } from "react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useEffect, useMemo, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   apiErrorMessage,
   archivedConflictOf,
   createExercise,
+  fetchMachines,
   restoreExercise,
 } from "../../api/client";
-import type { Exercise, MuscleCode } from "../../api/types";
-import { MUSCLE_GROUPS, MUSCLE_NAME_KO } from "../../api/types";
+import type { Exercise, Region } from "../../api/types";
+import { REGION_NAMES_KO } from "../../api/types";
+import { useFavorites } from "../../hooks/useFavorites";
+import { useTargets } from "../../hooks/useTargets";
 import BottomSheet from "../BottomSheet";
 import Button from "../Button";
-import AttributeBuilder from "../exercise-form/AttributeBuilder";
-import {
-  EMPTY_ATTRS,
-  attrsToPayload,
-  exerciseMatchesQuery,
-  type AttrDraft,
-} from "../exercise-form/attributeUtils";
+import ExerciseForm, { EMPTY_FORM, validateForm, type ExerciseFormValues } from "../exercise-form/ExerciseForm";
+import TagChips from "../exercise-form/TagChips";
+import { exerciseMatchesQuery } from "../exercise-form/attributeUtils";
 import { pushRecent, readRecent } from "./recentExercises";
+
+const REGION_ORDER = Object.keys(REGION_NAMES_KO) as Region[];
 
 function NewExerciseForm({
   initialName,
@@ -36,43 +37,22 @@ function NewExerciseForm({
   onCancel: () => void;
 }) {
   const queryClient = useQueryClient();
-  const [name, setName] = useState(initialName);
-  const [attrs, setAttrs] = useState<AttrDraft>(EMPTY_ATTRS);
-  const [primary, setPrimary] = useState<MuscleCode[]>([]);
-  const [secondary, setSecondary] = useState<MuscleCode[]>([]);
+  const machinesQ = useQuery({ queryKey: ["machines"], queryFn: fetchMachines, staleTime: 5 * 60_000 });
+  const [values, setValues] = useState<ExerciseFormValues>({ ...EMPTY_FORM, name_ko: initialName });
+  const [advOpen, setAdvOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  const togglePrimary = (code: MuscleCode) => {
-    setPrimary((prev) => (prev.includes(code) ? prev.filter((c) => c !== code) : [...prev, code]));
-    setSecondary((prev) => prev.filter((c) => c !== code));
-  };
-  const toggleSecondary = (code: MuscleCode) => {
-    setSecondary((prev) => (prev.includes(code) ? prev.filter((c) => c !== code) : [...prev, code]));
-    setPrimary((prev) => prev.filter((c) => c !== code));
-  };
-
   const create = async () => {
-    const n = name.trim();
-    if (!n) {
-      setErr("종목 이름을 입력하세요");
-      return;
-    }
-    if (primary.length === 0) {
-      setErr("주동근을 1개 이상 선택하세요");
+    const body = validateForm(values);
+    if (typeof body === "string") {
+      setErr(body);
       return;
     }
     setBusy(true);
     setErr(null);
     try {
-      const ex = await createExercise({
-        name_ko: n,
-        muscles: [
-          ...primary.map((code) => ({ code, role: "primary" as const })),
-          ...secondary.map((code) => ({ code, role: "secondary" as const })),
-        ],
-        ...attrsToPayload(attrs),
-      });
+      const ex = await createExercise(body);
       await queryClient.invalidateQueries({ queryKey: ["exercises"] });
       onCreated(ex);
     } catch (e) {
@@ -96,41 +76,20 @@ function NewExerciseForm({
     }
   };
 
-  const chip = (code: MuscleCode, on: boolean, onToggle: () => void) => (
-    <button
-      key={code}
-      type="button"
-      onClick={onToggle}
-      className={`rounded-full border px-3 py-2 text-sm ${on ? "border-accent bg-accent/10 text-accent" : "border-line text-muted"}`}
-    >
-      {MUSCLE_NAME_KO[code]}
-    </button>
-  );
-
   return (
     <div className="flex flex-col gap-3">
       <p className="text-sm font-semibold">새 종목 만들기</p>
-      <AttributeBuilder
+      <p className="text-xs text-muted">
+        내장 목록에 없는 종목만 추가하세요. 만든 종목은 내 계정에서만 보입니다.
+      </p>
+      <ExerciseForm
+        values={values}
+        onChange={setValues}
         exercises={exercises}
-        name={name}
-        attrs={attrs}
-        onNameChange={setName}
-        onAttrsChange={setAttrs}
-        initialNameTouched={initialName.trim() !== ""}
+        machines={machinesQ.data ?? []}
+        advancedOpen={advOpen}
+        onToggleAdvanced={() => setAdvOpen((v) => !v)}
       />
-      <div>
-        <p className="mb-2 text-xs text-muted">주동근 (1개 이상)</p>
-        <div className="flex flex-wrap gap-2">
-          {MUSCLE_GROUPS.map((m) => chip(m.code, primary.includes(m.code), () => togglePrimary(m.code)))}
-        </div>
-      </div>
-      <div>
-        <p className="mb-2 text-xs text-muted">보조근 (선택)</p>
-        <div className="flex flex-wrap gap-2">
-          {MUSCLE_GROUPS.map((m) => chip(m.code, secondary.includes(m.code), () => toggleSecondary(m.code)))}
-        </div>
-      </div>
-      <p className="text-xs text-muted">체중 계수 등 세부 설정은 종목 탭에서 수정할 수 있습니다.</p>
       {err ? <p className="text-sm text-danger">{err}</p> : null}
       <div className="flex gap-2">
         <Button variant="ghost" onClick={onCancel} disabled={busy}>
@@ -156,7 +115,10 @@ export interface ExercisePickerProps {
 export default function ExercisePicker({ open, onClose, exercises, onSelect }: ExercisePickerProps) {
   const [q, setQ] = useState("");
   const [creating, setCreating] = useState(false);
+  const [openRegion, setOpenRegion] = useState<Region | null>(null);
   const [recentIds, setRecentIds] = useState<number[]>(() => readRecent());
+  const favorites = useFavorites();
+  const { regionOf, nameOf } = useTargets();
 
   useEffect(() => {
     if (open) {
@@ -164,6 +126,7 @@ export default function ExercisePicker({ open, onClose, exercises, onSelect }: E
     } else {
       setQ("");
       setCreating(false);
+      setOpenRegion(null);
     }
   }, [open]);
 
@@ -173,50 +136,53 @@ export default function ExercisePicker({ open, onClose, exercises, onSelect }: E
   };
 
   const query = q.trim().toLowerCase();
-  // §3.6 검색: name_ko / name_en / aliases / 속성값 전부 매칭
-  const filtered = query ? exercises.filter((e) => exerciseMatchesQuery(e, query)) : exercises;
-
-  const byId = new Map(exercises.map((e) => [e.id, e]));
+  const byId = useMemo(() => new Map(exercises.map((e) => [e.id, e])), [exercises]);
+  const filtered = useMemo(
+    () => (query ? exercises.filter((e) => exerciseMatchesQuery(e, query)) : []),
+    [exercises, query],
+  );
+  const favoriteList = favorites.ids.map((id) => byId.get(id)).filter((e): e is Exercise => e != null);
   const recent = recentIds
     .map((id) => byId.get(id))
-    .filter((e): e is Exercise => e != null)
+    .filter((e): e is Exercise => e != null && !favorites.isFavorite(e.id))
     .slice(0, 8);
 
-  const musclesLabel = (e: Exercise) => {
-    const prim = e.muscles.filter((m) => m.role === "primary").map((m) => MUSCLE_NAME_KO[m.code]);
-    const sec = e.muscles.filter((m) => m.role === "secondary").map((m) => MUSCLE_NAME_KO[m.code]);
-    return prim.join("·") + (sec.length ? `/${sec.join("·")}` : "");
-  };
-
-  const grouped: { label: string; items: Exercise[] }[] = [];
-  if (!query) {
-    const map = new Map<string, Exercise[]>();
+  const byRegion = useMemo(() => {
+    const map = new Map<Region, Exercise[]>();
     for (const e of exercises) {
-      const fp = MUSCLE_GROUPS.find((m) =>
-        e.muscles.some((x) => x.role === "primary" && x.code === m.code),
-      );
-      const label = fp?.name_ko ?? "기타";
-      const list = map.get(label);
-      if (list) list.push(e);
-      else map.set(label, [e]);
+      const r = regionOf(e.default_target) ?? "core";
+      const list = map.get(r) ?? [];
+      list.push(e);
+      map.set(r, list);
     }
-    for (const m of MUSCLE_GROUPS) {
-      const items = map.get(m.name_ko);
-      if (items) grouped.push({ label: m.name_ko, items });
-    }
-    const etc = map.get("기타");
-    if (etc) grouped.push({ label: "기타", items: etc });
-  }
+    for (const list of map.values()) list.sort((a, b) => a.name_ko.localeCompare(b.name_ko, "ko"));
+    return map;
+  }, [exercises, regionOf]);
 
   const row = (e: Exercise) => (
-    <li key={e.id}>
+    <li key={e.id} className="flex items-center gap-1 border-b border-line/50">
       <button
         type="button"
         onClick={() => select(e)}
-        className="flex min-h-12 w-full items-center justify-between gap-2 border-b border-line/50 px-1 text-left active:bg-surface-2"
+        className="flex min-h-12 min-w-0 flex-1 flex-col justify-center gap-0.5 px-1 py-1.5 text-left active:bg-surface-2"
       >
-        <span>{e.name_ko}</span>
-        <span className="shrink-0 text-xs text-muted">{musclesLabel(e)}</span>
+        <span className="flex items-center gap-2">
+          <span className="truncate">{e.name_ko}</span>
+          {e.is_own ? (
+            <span className="shrink-0 rounded-tag bg-accent-glow px-1.5 py-0.5 text-[10px] font-bold text-accent">내 종목</span>
+          ) : null}
+          <span className="ml-auto shrink-0 text-xs text-muted">{nameOf(e.default_target)}</span>
+        </span>
+        <TagChips ex={e} />
+      </button>
+      <button
+        type="button"
+        aria-label={favorites.isFavorite(e.id) ? "즐겨찾기 해제" : "즐겨찾기 추가"}
+        aria-pressed={favorites.isFavorite(e.id)}
+        onClick={() => favorites.toggle(e.id)}
+        className={`touch-target shrink-0 text-lg ${favorites.isFavorite(e.id) ? "text-accent" : "text-faint"}`}
+      >
+        {favorites.isFavorite(e.id) ? "★" : "☆"}
       </button>
     </li>
   );
@@ -236,48 +202,81 @@ export default function ExercisePicker({ open, onClose, exercises, onSelect }: E
             type="search"
             value={q}
             onChange={(e) => setQ(e.target.value)}
-            placeholder="종목 검색"
+            placeholder="종목 검색 (이름·별칭·태그·계열)"
             className="min-h-12 rounded-xl border border-line bg-bg px-4"
           />
-          {query && filtered.length === 0 ? (
-            <Button variant="secondary" full onClick={() => setCreating(true)}>
-              ＋ "{q.trim()}" 새 종목 만들기
-            </Button>
-          ) : null}
-          {!query && recent.length > 0 ? (
-            <div>
-              <p className="mb-2 text-xs text-muted">최근 사용</p>
-              <div className="flex flex-wrap gap-2">
-                {recent.map((e) => (
-                  <button
-                    key={e.id}
-                    type="button"
-                    onClick={() => select(e)}
-                    className="touch-target rounded-full border border-line bg-surface-2 px-4 text-sm active:bg-line"
-                  >
-                    {e.name_ko}
-                  </button>
-                ))}
-              </div>
-            </div>
-          ) : null}
           {query ? (
             // 검색으로 결과가 급감해도 시트 높이가 주저앉지 않게 최소 높이 유지
-            // (키보드 위에서 input·결과 위치가 안정적으로 보이도록)
-            <ul className="min-h-[40dvh]">{filtered.map(row)}</ul>
+            <div className="min-h-[40dvh]">
+              {filtered.length === 0 ? (
+                <div className="flex flex-col gap-3">
+                  <p className="text-sm text-muted">검색 결과가 없습니다.</p>
+                  <Button variant="secondary" full onClick={() => setCreating(true)}>
+                    ＋ "{q.trim()}" 새 종목 만들기
+                  </Button>
+                </div>
+              ) : (
+                <ul>{filtered.slice(0, 60).map(row)}</ul>
+              )}
+            </div>
           ) : (
-            grouped.map((g) => (
-              <div key={g.label}>
-                <p className="mb-1 text-xs font-semibold text-muted">{g.label}</p>
-                <ul>{g.items.map(row)}</ul>
+            <>
+              <div>
+                <p className="mb-1 text-xs font-semibold text-muted">★ 즐겨찾기</p>
+                {favoriteList.length === 0 ? (
+                  <p className="px-1 py-2 text-xs text-faint">
+                    목록에서 ☆를 눌러 자주 하는 종목을 여기에 모아 두세요.
+                  </p>
+                ) : (
+                  <ul>{favoriteList.map(row)}</ul>
+                )}
               </div>
-            ))
+              {recent.length > 0 ? (
+                <div>
+                  <p className="mb-2 text-xs font-semibold text-muted">최근 사용</p>
+                  <div className="flex flex-wrap gap-2">
+                    {recent.map((e) => (
+                      <button
+                        key={e.id}
+                        type="button"
+                        onClick={() => select(e)}
+                        className="touch-target rounded-full border border-line bg-surface-2 px-4 text-sm active:bg-line"
+                      >
+                        {e.name_ko}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+              <div>
+                <p className="mb-1 text-xs font-semibold text-muted">전체 종목 · 부위별</p>
+                <ul className="flex flex-col gap-1">
+                  {REGION_ORDER.map((r) => {
+                    const list = byRegion.get(r) ?? [];
+                    const opened = openRegion === r;
+                    return (
+                      <li key={r}>
+                        <button
+                          type="button"
+                          onClick={() => setOpenRegion(opened ? null : r)}
+                          className="flex min-h-11 w-full items-center justify-between rounded-row bg-well px-3 text-sm font-semibold active:bg-surface-2"
+                        >
+                          <span>{REGION_NAMES_KO[r]}</span>
+                          <span className="font-numeric text-xs font-normal text-muted">
+                            {list.length} {opened ? "▾" : "▸"}
+                          </span>
+                        </button>
+                        {opened ? <ul className="mt-1 pl-1">{list.map(row)}</ul> : null}
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+              <Button variant="ghost" full onClick={() => setCreating(true)}>
+                ＋ 새 종목 만들기
+              </Button>
+            </>
           )}
-          {!(query && filtered.length === 0) ? (
-            <Button variant="ghost" full onClick={() => setCreating(true)}>
-              ＋ 새 종목 만들기
-            </Button>
-          ) : null}
         </div>
       )}
     </BottomSheet>

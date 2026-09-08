@@ -1,15 +1,24 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
-import { apiErrorMessage, downloadExport, fetchBodyweight, logout, saveBodyweight } from "../api/client";
+import {
+  ApiError,
+  apiErrorMessage,
+  changePassword,
+  downloadExport,
+  fetchBodyweight,
+  logout,
+  saveBodyweight,
+} from "../api/client";
 import type { BodyWeightEntry } from "../api/types";
 import Button from "../components/Button";
 import Card from "../components/Card";
 import Spinner from "../components/Spinner";
+import { useMe } from "../hooks/useMe";
 import {
-  INTENT_BACKFILL_OPTIONS,
   REST_TARGET_OPTIONS,
+  TARGET_BACKFILL_OPTIONS,
   useAppStore,
-  type IntentBackfillMode,
+  type TargetBackfillMode,
   type WeightStep,
 } from "../store";
 import { THEME_OPTIONS, setThemePref, useThemePref, type ThemePref } from "../theme";
@@ -56,6 +65,9 @@ function ChoiceButton({
     </button>
   );
 }
+
+const FIELD_CLS =
+  "touch-target w-full rounded-row border border-line bg-well px-4 text-base placeholder:text-faint focus:border-accent focus:outline-none";
 
 function ThemeSection() {
   const themePref = useThemePref();
@@ -113,28 +125,28 @@ function WeightStepSection() {
   );
 }
 
-const INTENT_BACKFILL_LABELS: Record<IntentBackfillMode, string> = {
+const TARGET_BACKFILL_LABELS: Record<TargetBackfillMode, string> = {
   ask: "물어보기",
   always: "항상 적용",
   never: "적용 안 함",
 };
 
-// §3.7A 소급 적용 확인의 설정화 — 확인 다이얼로그의 "다시 묻지 않기"와 같은 값을 공유
-function IntentBackfillSection() {
-  const mode = useAppStore((s) => s.intentBackfill);
-  const setMode = useAppStore((s) => s.setIntentBackfill);
+// §10.2 소급 적용 확인의 설정화 — 확인 다이얼로그의 "다시 묻지 않기"와 같은 값을 공유
+function TargetBackfillSection() {
+  const mode = useAppStore((s) => s.targetBackfill);
+  const setMode = useAppStore((s) => s.setTargetBackfill);
   return (
     <Card>
-      <SectionTitle>의도 변경 시 기존 세트</SectionTitle>
+      <SectionTitle>타겟 변경 시 기존 세트</SectionTitle>
       <div className="grid grid-cols-3 gap-2">
-        {INTENT_BACKFILL_OPTIONS.map((m) => (
+        {TARGET_BACKFILL_OPTIONS.map((m) => (
           <ChoiceButton key={m} active={mode === m} onClick={() => setMode(m)}>
-            {INTENT_BACKFILL_LABELS[m]}
+            {TARGET_BACKFILL_LABELS[m]}
           </ChoiceButton>
         ))}
       </div>
       <p className="mt-2 text-xs text-muted">
-        기록 화면에서 의도 주동근을 바꿀 때, 이미 저장된 같은 종목 세트에도 적용할지 처리
+        기록 화면에서 종목 카드의 타겟 부위를 바꿀 때, 이미 저장된 같은 종목 세트에도 적용할지 처리
         방식입니다.
       </p>
     </Card>
@@ -198,9 +210,7 @@ function BodyweightSection() {
             {latest ? (
               <>
                 최근 기록:{" "}
-                <span className="font-numeric font-semibold text-text">
-                  {latest.weight_kg} kg
-                </span>{" "}
+                <span className="font-numeric font-semibold text-text">{latest.weight_kg} kg</span>{" "}
                 ({formatKoreanDate(latest.date)})
               </>
             ) : (
@@ -217,7 +227,7 @@ function BodyweightSection() {
               onKeyDown={(e) => {
                 if (e.key === "Enter") void save();
               }}
-              className="touch-target min-w-0 flex-1 rounded-row border border-line bg-well px-4 font-numeric text-base placeholder:text-faint focus:border-accent focus:outline-none"
+              className={`${FIELD_CLS} min-w-0 flex-1 font-numeric`}
             />
             <Button onClick={() => void save()} disabled={saving || input.trim() === ""}>
               {saving ? <Spinner size="sm" /> : "저장"}
@@ -252,7 +262,7 @@ function BodyweightSection() {
   );
 }
 
-function ExportSection() {
+function ExportSection({ isAdmin }: { isAdmin: boolean }) {
   const [busy, setBusy] = useState<"db" | "csv" | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -271,24 +281,101 @@ function ExportSection() {
   return (
     <Card>
       <SectionTitle>데이터 내보내기</SectionTitle>
-      <div className="grid grid-cols-2 gap-2">
+      <div className={`grid gap-2 ${isAdmin ? "grid-cols-2" : "grid-cols-1"}`}>
         <Button variant="secondary" disabled={busy !== null} onClick={() => void run("csv")}>
           {busy === "csv" ? <Spinner size="sm" className="mx-auto" /> : "CSV 다운로드"}
         </Button>
-        <Button variant="secondary" disabled={busy !== null} onClick={() => void run("db")}>
-          {busy === "db" ? <Spinner size="sm" className="mx-auto" /> : "DB 백업 다운로드"}
-        </Button>
+        {isAdmin ? (
+          <Button variant="secondary" disabled={busy !== null} onClick={() => void run("db")}>
+            {busy === "db" ? <Spinner size="sm" className="mx-auto" /> : "DB 백업 다운로드"}
+          </Button>
+        ) : null}
       </div>
       <p className="mt-2 text-xs text-muted">
-        CSV는 전체 세트 기록(Excel 호환), DB는 SQLite 스냅샷입니다.
+        CSV는 내 세트 기록 전체(Excel 호환)입니다.
+        {isAdmin ? " DB는 전체 사용자 데이터가 담긴 SQLite 스냅샷이라 관리자만 받을 수 있습니다." : ""}
       </p>
       {error ? <p className="mt-2 text-sm text-danger">{error}</p> : null}
     </Card>
   );
 }
 
+// §10.1 비밀번호 변경 — 사용자 테이블이 생기면서 앱에서 바꿀 수 있게 됐다
+function PasswordSection() {
+  const [current, setCurrent] = useState("");
+  const [next, setNext] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    if (next.length < 4) {
+      setMsg({ ok: false, text: "새 비밀번호는 4자 이상이어야 합니다." });
+      return;
+    }
+    if (next !== confirm) {
+      setMsg({ ok: false, text: "새 비밀번호 확인이 일치하지 않습니다." });
+      return;
+    }
+    setBusy(true);
+    setMsg(null);
+    try {
+      await changePassword({ current_password: current, new_password: next });
+      setCurrent("");
+      setNext("");
+      setConfirm("");
+      setMsg({ ok: true, text: "비밀번호를 변경했습니다." });
+    } catch (err) {
+      setMsg({
+        ok: false,
+        text:
+          err instanceof ApiError && err.status === 401
+            ? "현재 비밀번호가 올바르지 않습니다."
+            : errorText(err),
+      });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <form onSubmit={(e) => void submit(e)} className="mt-3 flex flex-col gap-2">
+      <input
+        type="password"
+        value={current}
+        onChange={(e) => setCurrent(e.target.value)}
+        placeholder="현재 비밀번호"
+        autoComplete="current-password"
+        className={FIELD_CLS}
+      />
+      <input
+        type="password"
+        value={next}
+        onChange={(e) => setNext(e.target.value)}
+        placeholder="새 비밀번호 (4자 이상)"
+        autoComplete="new-password"
+        className={FIELD_CLS}
+      />
+      <input
+        type="password"
+        value={confirm}
+        onChange={(e) => setConfirm(e.target.value)}
+        placeholder="새 비밀번호 확인"
+        autoComplete="new-password"
+        className={FIELD_CLS}
+      />
+      {msg ? <p className={`text-sm ${msg.ok ? "text-accent" : "text-danger"}`}>{msg.text}</p> : null}
+      <Button type="submit" variant="secondary" disabled={busy || !current || !next}>
+        {busy ? "변경 중…" : "비밀번호 변경"}
+      </Button>
+    </form>
+  );
+}
+
 export default function Settings() {
   const navigate = useNavigate();
+  const me = useMe();
 
   return (
     <main className="mx-auto max-w-[720px] p-4 safe-bottom">
@@ -308,17 +395,24 @@ export default function Settings() {
         <ThemeSection />
         <WeightStepSection />
         <RestTargetSection />
-        <IntentBackfillSection />
+        <TargetBackfillSection />
         <BodyweightSection />
-        <ExportSection />
+        <ExportSection isAdmin={me.data?.is_admin ?? false} />
         <Card>
           <SectionTitle>계정</SectionTitle>
-          <Button variant="danger" full onClick={() => logout()}>
+          <p className="text-sm">
+            <span className="font-semibold">{me.data?.display_name ?? "…"}</span>
+            {me.data ? <span className="ml-2 text-muted">@{me.data.username}</span> : null}
+            {me.data?.is_admin ? (
+              <span className="ml-2 rounded-tag bg-accent-glow px-1.5 py-0.5 text-[10px] font-bold text-accent">
+                관리자
+              </span>
+            ) : null}
+          </p>
+          <PasswordSection />
+          <Button variant="danger" full className="mt-4" onClick={() => logout()}>
             로그아웃
           </Button>
-          <p className="mt-2 text-xs text-muted">
-            비밀번호 변경은 서버의 backend/.env 수정 후 재시작으로만 가능합니다.
-          </p>
         </Card>
       </div>
     </main>

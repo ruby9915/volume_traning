@@ -1,6 +1,6 @@
 # 운동 볼륨 트래킹 앱
 
-웨이트 트레이닝 볼륨(중량×횟수×세트)을 기록·분석하는 1인용 반응형 웹앱.
+웨이트 트레이닝 볼륨(중량×횟수×세트)을 기록·분석하는 반응형 웹앱. v2(2026-09-08)부터 지인 다중 사용자(아이디/비밀번호 가입), 세트 타겟 부위 3단계 분류, 내장 종목 라이브러리 391종 + 즐겨찾기, 머신 카탈로그, 읽기 전용 관리자 페이지를 갖는다 (SETTING.MD §10).
 React(Vite) + FastAPI + SQLite. 연구실 PC(24시간 구동)에서 서버를 돌리고 **Tailscale Funnel**로 외부(헬스장 LTE)에서 접속한다.
 
 설계의 단일 기준은 [`SETTING.MD`](./SETTING.MD)이다. 이 문서는 설치·개발·운영·백업 절차 요약본이다.
@@ -27,12 +27,15 @@ secret은 `backend/.env` 한 곳에만 둔다 (git 커밋 금지, `.gitignore` �
 ```powershell
 Copy-Item backend\.env.example backend\.env
 # backend\.env 를 열어 값 채우기:
-#   APP_PASSWORD = 로그인 비밀번호
-#   JWT_SECRET   = 긴 랜덤 문자열 (예: python -c "import secrets; print(secrets.token_hex(32))")
+#   ADMIN_USERNAME = 첫 관리자 아이디 (기본 admin)
+#   APP_PASSWORD   = 첫 관리자 비밀번호 (최초 생성 시에만 사용)
+#   JWT_SECRET     = 긴 랜덤 문자열 (예: python -c "import secrets; print(secrets.token_hex(32))")
 #   DB_PATH      = 기본값 사용 (backend/data/app.db)
 ```
 
-- **비밀번호 변경**: 앱에는 변경 UI가 없다. `backend\.env`의 `APP_PASSWORD`를 수정한 뒤 서버를 재시작한다.
+- **첫 관리자 계정 (v2)**: 사용자 테이블이 비어 있을 때 서버가 `ADMIN_USERNAME`(기본 `admin`) + `APP_PASSWORD`로 관리자를 1회 생성한다. 기존 기록은 전부 이 계정에 귀속된다. 이후 비밀번호는 **앱 설정 화면**에서 바꾸며 `.env` 값은 더 이상 쓰이지 않는다.
+- **지인 가입**: 로그인 화면의 "회원가입"에서 아이디/비밀번호만 입력. 가입 계정은 일반 사용자이며 자기 기록만 본다. 관리자는 "관리" 탭에서 모든 사용자의 기록을 열람만 할 수 있다(수정 불가).
+- v1(단일 비밀번호) 토큰은 v2 배포 후 무효 — 폰에서 1회 재로그인(아이디 `admin`, 비밀번호는 기존 `APP_PASSWORD`).
 - 프론트엔드에는 비밀값을 두지 않는다 (`VITE_*`는 번들에 노출됨).
 
 ## 개발 (핫리로드)

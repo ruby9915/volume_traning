@@ -2,6 +2,7 @@
 
 - 작성일: 2026-07-19
 - 상태: **v1 설계 확정** — 이 문서가 구현의 단일 기준(canonical spec)이다.
+- **2026-09-08 v2 개정(§10)**: 다중 사용자(계정·로그인·관리자), 타겟 부위 체계(주동근/보조근 → 세트 타겟 100% 귀속, 3단계 분류), 종목 라이브러리(내장 391종 + 즐겨찾기 + 태그, 이름 자동 조합 폐기), 머신 카탈로그. §1·§3·§4·§5·§6의 해당 항목은 §10이 우선한다.
 - 변경 이력: 2026-07-19 배포 방식 변경 — Fly.io 유료 클라우드 → **PC 서버 + Tailscale Funnel(무료)** (사용자 결정, §7). 서버는 **연구실 PC, 24시간 상시 구동** (사용자 확인). 2026-07-22 **종목 속성 체계 추가** (§3.6, 사용자 결정 — 상용앱 조사·시드 백필 시험 후 "속성=분류, 정체성=행, 값=사용자 사전" 형태로 확정)
 - 결정 과정: 사용자 문답으로 요구사항 확정 → 데이터 모델 / API / UI / 분석 / 인프라 5개 영역 병렬 설계 → 교차 검토로 모순·누락 정리 후 통합.
 
@@ -709,3 +710,99 @@ tailscale funnel --bg 8000          # 최초 1회 승인 후 상시 유지
 4. **bodyweight_factor는 근사값** — 목적은 정밀 역학이 아니라 맨몸 볼륨 0 왜곡 방지.
 5. **부위별 가중 볼륨의 합 ≠ 총볼륨** (secondary 0.5 가중) — 차트에 "가중" 명시로 해소.
 6. **시간 기반 운동(플랭크) 미지원** — v1 스코프 제외, 필요 시 별도 컬럼으로 추가.
+
+---
+
+## 10. v2 개정 (2026-09-08) — 다중 사용자 · 타겟 부위 · 종목 라이브러리
+
+사용자 문답(2026-09-08)으로 확정. 이 섹션이 §1·§3·§4·§5·§6의 해당 항목보다 우선한다. 구현·마이그레이션은 같은 날 완료(스키마 v4).
+
+### 10.0 결정 요약
+
+| 항목 | 결정 |
+|---|---|
+| 사용자 | **다중 사용자** (본인 + 지인). 아이디/비밀번호 가입·로그인. 다른 플랫폼 연동은 이후 |
+| 보안 수준 | 최소 — 무차별 대입 지연·잠금·이메일 인증 없음 (사용자 결정: 지인 전용). 비밀번호는 표준 라이브러리 scrypt 해시만 (비용 0) |
+| 관리자 | **읽기 전용** — 사용자 목록·각 사용자의 기록 열람만. 시스템 수정은 작업 PC에서 직접 |
+| 부위 귀속 | **세트 볼륨은 그 세트의 타겟 부위에 100%**. 협응근 분배 없음 (계산 단순함 우선, "일단은 이렇게") |
+| 타겟 분류 | 부위 6 → 근육 14 → 세부 43의 3단계. 어느 단계에서 골라도 됨. 사용자가 세부 목록을 직접 보완 |
+| 분할 루틴 | 분할표를 두지 않는다. 세션 부위 라벨은 그날 세트 타겟에서 자동 도출 (분할 방식은 사람·시기마다 다름) |
+| 종목 속성 | **계열(base_movement)만 전용 필드**, 장비·자세·그립·각도는 자유 **태그**. **이름 자동 조합 폐기** ("스탠딩 케이블 트라이셉스 푸시다운" 문제) |
+| 종목 라이브러리 | 고급자 기준 변형 포함 **내장 391종**을 미리 넣고 사용자는 **즐겨찾기**로 자주 쓰는 종목만 고른다. 종목 추가 기능은 남기되 주 경로가 아님 |
+| 머신 | 브랜드·모델 카탈로그(395대 초안)를 종목에 선택적으로 연결. 연식별 타겟 차이는 앱이 알 필요 없음 — 타겟은 기록 시 세트 단위로 고른다 |
+| 기존 기록 | 커스텀 19종을 라이브러리 이름으로 병합/승격 (매핑표 `db.CUSTOM_MERGE_MAP`), 세트는 종목 기본 타겟으로 채움 |
+
+### 10.1 계정·인증
+
+- `user(id, username UNIQUE, password_hash, display_name, is_admin, created_at)`. `username`은 영문·숫자·`._-` 2~32자, 비밀번호 4자 이상.
+- `POST /api/auth/register {username, password, display_name?}` → 201 + 토큰(가입 즉시 로그인). `POST /api/auth/login {username, password}`. `GET /api/auth/me`. `POST /api/auth/password {current_password, new_password}` → 204.
+- JWT payload `{sub: user_id, exp}`. v1 토큰(sub 없음)은 401 → 재로그인 (배포 후 1회).
+- **첫 관리자**: 사용자 테이블이 비어 있을 때 마이그레이션이 `.env`의 `ADMIN_USERNAME`(기본 admin)·`APP_PASSWORD`로 생성. 이후 `.env` 값은 쓰이지 않는다 (비밀번호는 앱에서 변경). 가입으로 만든 계정은 항상 일반 사용자.
+- 모든 데이터 조회·변경은 로그인한 사용자 범위로 제한: 세션·세트·체중·즐겨찾기·커스텀 종목·통계·CSV. `client_id` 멱등 키도 사용자 범위(전역 UNIQUE와 충돌 시 409).
+- 운영 고지: 지인 데이터가 연구실 PC의 공개 URL로 노출된다. §9의 트레이드오프(재부팅 다운타임, XSS 시 토큰 노출)가 남의 데이터에도 적용됨을 알고 수용.
+
+### 10.2 타겟 부위 체계
+
+- `muscle_group`에 `level(2|3)`·`parent_id` 추가. level 2 = 근육(기존 12 코드 유지 + `adductors`·`hip_flexors`), level 3 = 세부(`upper_chest`, `vastus_medialis`, `triceps_long` …, `seed_data/targets.py`). `region` 컬럼은 부위 6분류(가상 상위 단계). `target_path` VIEW가 타겟 → 근육 → 부위 경로를 준다.
+- `workout_set.target_id`(옛 `intent_muscle_group_id`를 RENAME). **앱이 항상 채운다**: 저장 시 미지정이면 종목 `default_target_id`. 응답 `target`·`target_ko`는 null 아님. PATCH `target: null` = 종목 기본으로 복귀.
+- `exercise_muscle`(주동근/보조근) 삭제 → `exercise.default_target_id` 하나.
+- **집계 단일 규칙**: 세트 볼륨·세트 수는 `target_id`에 100%. 세부 타겟은 근육·부위로 자동 합산. `set_volume`·PR·e1RM·총볼륨은 무영향.
+- 분석: `per_muscle`은 근육(level 2) 코드 키, `/api/stats/muscles`는 타겟 행 전부(level 2 = 자기+세부 합, level 3 = 자기). 대시보드 "부위별 분배"는 부위/근육/세부 토글 드릴다운. `muscle_sets_this_week`는 근육 단위 `set_count`(정수).
+- **세션 부위 라벨**: 세트 타겟을 부위로 합산해 1위가 `main_region`, 2위가 세션 볼륨의 **25% 이상**이면 `region_label`에 "하체·등"으로 함께. 동률은 고정 부위 순서. 25%는 추정치 — 써 보고 조정(`routers/sessions.SECOND_REGION_MIN_SHARE`).
+- UX: 기록·세션 상세의 종목 카드 "타겟" 칩(종목 기본이 미리 선택, 다르면 accent 강조) → 3단계 시트. 카드 단위 sticky, 세션 간 carry-over 없음(§3.7A 규칙 유지). 소급 적용은 설정 3택(물어보기/항상/안 함) 그대로. 세트 행 뱃지는 **종목 기본과 다른 타겟만** 표시.
+- `GET /api/targets` — 분류는 데이터. 프론트는 코드를 하드코딩하지 않고 여기서 받아 캐시.
+
+### 10.3 종목 라이브러리 · 계열 · 태그 · 즐겨찾기
+
+- `exercise`: `base_movement`(계열, 전용 필드 유지) + `tags`(쉼표 구분 자유 태그, 옛 equipment/support/grip/angle 4컬럼은 tags로 흡수 후 DROP) + `default_target_id` + `machine_id` + `user_id`(NULL = 내장 공용, 값 = 소유자) + `aliases`.
+- **내장 라이브러리** `seed_data/exercises.py` 391종 (v1 45종 이름·계수 그대로 포함). 기동 시 name_ko 기준 INSERT OR IGNORE. 데이터 파일이라 사용자가 자유롭게 고쳐도 된다(코드가 아님). 시간 기반 종목 제외, 어시스티드 풀업·딥스는 체중 계수 0.5 근사(음수 중량 입력 불가).
+- 이름은 통용명 그대로. **이름 자동 조합·분해 넛지·중복 조합 경고·정정/변경 확인 다이얼로그 폐기**. 계열 합산(`/api/stats/family`)은 유지 — 그래서 계열만 전용 필드.
+- 가시성·권한: 내장은 모두에게, 커스텀은 소유자에게만. **내장 수정·숨김은 관리자만**(403), 일반 사용자는 **복제**해서 내 종목으로. 커스텀 삭제는 소유자만. `name_ko`는 전역 UNIQUE 유지(다른 사용자의 커스텀과 이름이 겹치면 409 — 지인 규모에서 수용).
+- **즐겨찾기** `favorite(user_id, exercise_id, sort_order)`: `GET/PUT /api/favorites`, `POST/DELETE /api/favorites/{id}`. 종목 선택 시트 최상단(순서 편집은 종목 화면). 마이그레이션이 기존 사용자의 세트 수 상위 15종으로 초기화.
+- 종목 선택 시트: 즐겨찾기 → 최근 사용 → 검색(이름·별칭·태그·계열·머신) / 부위별 펼치기. 전체 목록은 검색·펼치기로만 연다(수백 종 스크롤 방지).
+- 검색·자동완성 소스는 이미 로드된 종목 목록의 distinct 값(계열·태그) — 사용자 사전 원칙 유지.
+
+### 10.4 머신 카탈로그
+
+- `machine(id, brand, model UNIQUE(brand, model), name_ko, target_id?)`. `seed_data/machines.py` 초안 395대: Hammer Strength 81, gym80 76, Life Fitness 70, 뉴텍 64, Nautilus 61, Arsenal Strength 43 (2026-09-08 웹 조사, 제조사 카탈로그·국내 딜러 페이지). 모델명은 제조사 표기, `target_id`는 참고값.
+- `GET /api/machines`, `POST /api/machines`(누구나 추가, 공용). 종목 폼의 선택 항목. 연식별 타겟 차이는 기록 시 타겟 선택으로 흡수.
+
+### 10.5 관리자 페이지 (읽기 전용)
+
+- `is_admin` 계정에만 "관리" 탭. `GET /api/admin/users`(세션·세트 수·마지막 날짜), `GET /api/admin/users/{id}/sessions`, `.../sessions/{sid}`, `.../bodyweight`. 쓰기 경로 없음.
+- `GET /api/export/db`(전체 스냅샷)는 관리자만. CSV는 본인 데이터만.
+
+### 10.6 스키마 v4 · 마이그레이션 · 병합
+
+- `PRAGMA user_version` 3 → 4. 구조 단계(`db._migrate_structure`, 컬럼 존재 확인 기반 멱등) → VIEW 재생성(`set_volume`에 `user_id`·`target_id`, 체중 조회는 세션 소유자 기준 / `target_path`) → 시드 → 데이터 단계(`db._apply_v4_data`) → 버전 기록, 한 트랜잭션.
+- 데이터 단계: 첫 관리자 생성 → 소유자 없는 세션·체중·커스텀을 관리자에 귀속 → 내장 종목 기본 타겟·계열·태그·별칭을 시드로 채움(default_target 비어 있는 행만) → 커스텀 기본 타겟 = 옛 주동근 첫 번째 → 세트 `target_id` 비어 있으면 종목 기본 → `exercise_muscle` DROP → **커스텀 병합**(정규화 이름 일치 또는 `CUSTOM_MERGE_MAP`: 내장 행이 따로 있으면 세트를 옮기고 삭제, 이름이 라이브러리와 같아 시드가 무시된 행은 내장으로 **승격**해 id·기록 보존) → 즐겨찾기 초기화.
+- `body_weight_log`는 UNIQUE(date) → UNIQUE(user_id, date)로 재구축. `workout_session.user_id` 인덱스.
+- 실사용 DB(세션 17·세트 311·커스텀 19) 사본으로 검증: 16종 병합/승격, 3종 유지(암풀다운·시티드 디클라인 체스트 프레스 머신은 매핑 추가 후 병합, 케이블 트라이셉스 프레스는 판단 보류로 유지). 총볼륨 +3,075kg — 푸쉬업 5세트가 내장 푸시업(체중 계수 0.65)으로 합쳐지며 체중이 포함됐고, 인클라인 덤벨 플라이 1세트가 ×2 규칙을 받은 결과. 볼륨 규칙(§3.3)대로이며 의도된 변화.
+
+### 10.7 API 변경 요약
+
+- 추가: `/api/auth/register`, `/api/auth/me`, `/api/auth/password`, `/api/targets`, `/api/machines`, `/api/favorites`, `/api/admin/*`.
+- 변경: 세트 `intent_muscle` → `target`(응답 `target`·`target_ko` 필수), 세션 요약 `region_label` 추가·`main_region` 유지, 세션 그룹 `default_target`, 종목 `muscles` 제거 → `tags[]`·`default_target`·`default_target_ko`·`machine_id`·`machine_name`·`is_own`, stats `muscle_sets_this_week[].set_count`, `MusclePoint`에 `level`·`parent_code`, CSV 컬럼(타겟 3단계·태그·머신).
+- 계약: types.ts + 계약 테스트 동반 갱신 규칙 유지 (pytest 140).
+
+### 10.8 파일 구조 추가 (§4.4 보완)
+
+```
+backend/app/
+├─ seed.py                # 시드 삽입 로직 (옛 seed_exercises.py)
+├─ seed_data/             # 데이터: targets.py(분류) · exercises.py(라이브러리 391) · machines.py(카탈로그 395)
+└─ routers/catalog.py     # targets · machines
+   routers/admin.py       # 읽기 전용 관리자
+frontend/src/
+├─ hooks/                 # useTargets · useMe · useFavorites
+├─ components/target/     # TargetChipButton · TargetSheet · TargetBackfillModal · useTargetBackfill
+└─ pages/Register.tsx · pages/Admin.tsx
+```
+
+### 10.9 알고 수용하는 것 · 미결
+
+1. 협응근 볼륨을 세지 않으므로 "부위별 분배"는 관여 근육이 아니라 **의도한 부위**의 분포다 (차트 문구로 표시).
+2. `name_ko` 전역 UNIQUE — 서로 다른 사용자가 같은 이름의 커스텀을 만들 수 없다. 지인 규모에서 수용.
+3. 라이브러리·타겟 세부·머신 카탈로그는 초안. 정확성 검토는 사용자 몫. 코드가 아니라 데이터라 수정이 곧 반영된다(다음 기동 시 INSERT OR IGNORE — 이름을 바꾸면 새 행이 생기니 기존 행은 앱에서 수정).
+4. 세션 부위 라벨 2위 임계 25%는 추정치.
+5. 다른 플랫폼 연동(소셜 로그인), 사용자별 분할 루틴 저장은 이후.

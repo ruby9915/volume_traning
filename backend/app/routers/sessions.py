@@ -2,8 +2,8 @@ import sqlite3
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 
+from ..auth import CurrentUser, require_auth
 from ..db import E1RM_EXPR, get_db
-from ..seed_exercises import REGION_NAMES_KO
 from ..schemas import (
     BodyWeightOut,
     BodyWeightUpsert,
@@ -16,22 +16,28 @@ from ..schemas import (
     SetOut,
     SetUpdate,
 )
+from ..seed_data.targets import REGION_NAMES_KO
+from .catalog import target_id_or_422
 
 router = APIRouter(prefix="/api", tags=["sessions"])
 
+# 세션 부위 라벨: 2위 부위가 세션 볼륨의 이 비율 이상이면 "하체·등"처럼 둘 다 표시 (§10.2, 추정치)
+SECOND_REGION_MIN_SHARE = 0.25
+_REGION_ORDER = {region: i for i, region in enumerate(REGION_NAMES_KO)}
+
 
 def _pr_flags(db: sqlite3.Connection, row: sqlite3.Row) -> tuple[bool, bool]:
-    # "이전" = (date, id) 순서 — 소급 입력·세션 date 이동에도 §6.3 정합
+    # "이전" = (date, id) 순서 — 소급 입력·세션 date 이동에도 §6.3 정합. 같은 사용자 기록만.
     if row["is_warmup"] or row["weight_kg"] <= 0:
         return False, False
     has_prev_session = db.execute(
         """
         SELECT 1 FROM set_volume sv
-        WHERE sv.exercise_id = ? AND sv.session_id != ?
+        WHERE sv.user_id = ? AND sv.exercise_id = ? AND sv.session_id != ?
           AND (sv.date < ? OR (sv.date = ? AND sv.set_id < ?))
         LIMIT 1
         """,
-        (row["exercise_id"], row["session_id"], row["date"], row["date"], row["id"]),
+        (row["user_id"], row["exercise_id"], row["session_id"], row["date"], row["date"], row["id"]),
     ).fetchone()
     if has_prev_session is None:
         return False, False
@@ -40,10 +46,10 @@ def _pr_flags(db: sqlite3.Connection, row: sqlite3.Row) -> tuple[bool, bool]:
         SELECT MAX(sv.weight_kg) AS max_weight,
                MAX({E1RM_EXPR}) AS max_e1rm
         FROM set_volume sv
-        WHERE sv.exercise_id = ? AND sv.is_warmup = 0 AND sv.weight_kg > 0
+        WHERE sv.user_id = ? AND sv.exercise_id = ? AND sv.is_warmup = 0 AND sv.weight_kg > 0
           AND (sv.date < ? OR (sv.date = ? AND sv.set_id < ?))
         """,
-        (row["exercise_id"], row["date"], row["date"], row["id"]),
+        (row["user_id"], row["exercise_id"], row["date"], row["date"], row["id"]),
     ).fetchone()
     is_weight_pr = prev["max_weight"] is not None and row["weight_kg"] > prev["max_weight"]
     is_e1rm_pr = False
@@ -53,49 +59,72 @@ def _pr_flags(db: sqlite3.Connection, row: sqlite3.Row) -> tuple[bool, bool]:
     return is_weight_pr, is_e1rm_pr
 
 
+# 세트의 타겟: 세트 target_id, 비어 있으면 종목 기본 타겟 (마이그레이션 중간 상태 방어)
+_TARGET_COLS = (
+    "COALESCE(t.code, dt.code) AS target, COALESCE(t.name_ko, dt.name_ko) AS target_ko"
+)
+_TARGET_JOINS = """
+LEFT JOIN muscle_group t ON t.id = ws.target_id
+LEFT JOIN muscle_group dt ON dt.id = e.default_target_id
+"""
+
+
 def _set_out(db: sqlite3.Connection, set_id: int) -> SetOut:
     row = db.execute(
-        """
+        f"""
         SELECT ws.id, ws.client_id, ws.session_id, ws.exercise_id, ws.set_index,
                ws.weight_kg, ws.reps, ws.is_warmup, ws.note, ws.created_at,
-               sv.volume_kg, sv.date,
-               img.code AS intent_muscle, img.name_ko AS intent_muscle_ko
+               sv.volume_kg, sv.date, sv.user_id, {_TARGET_COLS}
         FROM workout_set ws
         JOIN set_volume sv ON sv.set_id = ws.id
-        LEFT JOIN muscle_group img ON img.id = ws.intent_muscle_group_id
+        JOIN exercise e ON e.id = ws.exercise_id
+        {_TARGET_JOINS}
         WHERE ws.id = ?
         """,
         (set_id,),
     ).fetchone()
     is_weight_pr, is_e1rm_pr = _pr_flags(db, row)
-    return SetOut(
-        **dict(row), is_weight_pr=is_weight_pr, is_e1rm_pr=is_e1rm_pr
-    )
+    data = dict(row)
+    data.pop("user_id")
+    return SetOut(**data, is_weight_pr=is_weight_pr, is_e1rm_pr=is_e1rm_pr)
 
 
-def _intent_muscle_id(db: sqlite3.Connection, code: str) -> int:
-    # code는 Pydantic MuscleCode Literal로 이미 422 검증됨 — 시드 무결 방어용
+def _owned_set(db: sqlite3.Connection, user: CurrentUser, set_id: int) -> sqlite3.Row:
     row = db.execute(
-        "SELECT id FROM muscle_group WHERE code = ?", (code,)
+        """
+        SELECT ws.id, ws.exercise_id FROM workout_set ws
+        JOIN workout_session s ON s.id = ws.session_id
+        WHERE ws.id = ? AND s.user_id = ?
+        """,
+        (set_id, user.id),
     ).fetchone()
     if row is None:
-        raise HTTPException(status_code=422, detail="유효하지 않은 근육 code입니다")
-    return row["id"]
+        raise HTTPException(status_code=404, detail="세트를 찾을 수 없습니다")
+    return row
 
 
 @router.post("/sets", response_model=SetOut, status_code=201)
 def create_set(
-    body: SetCreate, response: Response, db: sqlite3.Connection = Depends(get_db)
+    body: SetCreate,
+    response: Response,
+    user: CurrentUser = Depends(require_auth),
+    db: sqlite3.Connection = Depends(get_db),
 ) -> SetOut:
     existing = db.execute(
-        "SELECT id FROM workout_set WHERE client_id = ?", (body.client_id,)
+        """
+        SELECT ws.id FROM workout_set ws JOIN workout_session s ON s.id = ws.session_id
+        WHERE ws.client_id = ? AND s.user_id = ?
+        """,
+        (body.client_id, user.id),
     ).fetchone()
     if existing is not None:
         response.status_code = 200
         return _set_out(db, existing["id"])
 
     exercise = db.execute(
-        "SELECT id FROM exercise WHERE id = ?", (body.exercise_id,)
+        "SELECT id, default_target_id FROM exercise"
+        " WHERE id = ? AND (user_id IS NULL OR user_id = ?)",
+        (body.exercise_id, user.id),
     ).fetchone()
     if exercise is None:
         raise HTTPException(status_code=404, detail="종목을 찾을 수 없습니다")
@@ -105,7 +134,8 @@ def create_set(
         # §3.7-B 세션 직접 귀속 — lazy 생성 생략. date만으로 보내면 같은 날
         # 두 번째 세션에 잘못 붙던 결함의 수정 경로.
         session = db.execute(
-            "SELECT id, date FROM workout_session WHERE id = ?", (body.session_id,)
+            "SELECT id, date FROM workout_session WHERE id = ? AND user_id = ?",
+            (body.session_id, user.id),
         ).fetchone()
         if session is None:
             raise HTTPException(
@@ -118,25 +148,28 @@ def create_set(
         session_id = session["id"]
     elif not body.new_session:
         latest = db.execute(
-            "SELECT id FROM workout_session WHERE date = ? ORDER BY id DESC LIMIT 1",
-            (body.date,),
+            "SELECT id FROM workout_session WHERE date = ? AND user_id = ?"
+            " ORDER BY id DESC LIMIT 1",
+            (body.date, user.id),
         ).fetchone()
         if latest is not None:
             session_id = latest["id"]
     if session_id is None:
         session_id = db.execute(
-            "INSERT INTO workout_session (date) VALUES (?)", (body.date,)
+            "INSERT INTO workout_session (date, user_id) VALUES (?, ?)", (body.date, user.id)
         ).lastrowid
 
-    intent_id = (
-        None if body.intent_muscle is None else _intent_muscle_id(db, body.intent_muscle)
+    target_id = (
+        exercise["default_target_id"]
+        if body.target is None
+        else target_id_or_422(db, body.target)
     )
     try:
         # set_index 산출과 INSERT를 단일 문장으로 — 동시 요청 간 중복 index 방지
         cur = db.execute(
             """
             INSERT INTO workout_set (client_id, session_id, exercise_id, set_index,
-                                     weight_kg, reps, is_warmup, intent_muscle_group_id)
+                                     weight_kg, reps, is_warmup, target_id)
             VALUES (?, ?, ?,
                     (SELECT COALESCE(MAX(set_index), 0) + 1 FROM workout_set WHERE session_id = ?),
                     ?, ?, ?, ?)
@@ -149,16 +182,21 @@ def create_set(
                 body.weight_kg,
                 body.reps,
                 int(body.is_warmup),
-                intent_id,
+                target_id,
             ),
         )
     except sqlite3.IntegrityError:
         db.rollback()
         existing = db.execute(
-            "SELECT id FROM workout_set WHERE client_id = ?", (body.client_id,)
+            """
+            SELECT ws.id FROM workout_set ws JOIN workout_session s ON s.id = ws.session_id
+            WHERE ws.client_id = ? AND s.user_id = ?
+            """,
+            (body.client_id, user.id),
         ).fetchone()
         if existing is None:
-            raise
+            # client_id UNIQUE는 전역 — 다른 사용자의 세트와 충돌 (UUID라 사실상 발생하지 않음)
+            raise HTTPException(status_code=409, detail="client_id가 이미 사용되었습니다")
         response.status_code = 200
         return _set_out(db, existing["id"])
     db.commit()
@@ -167,19 +205,22 @@ def create_set(
 
 @router.patch("/sets/{set_id}", response_model=SetOut)
 def update_set(
-    set_id: int, body: SetUpdate, db: sqlite3.Connection = Depends(get_db)
+    set_id: int,
+    body: SetUpdate,
+    user: CurrentUser = Depends(require_auth),
+    db: sqlite3.Connection = Depends(get_db),
 ) -> SetOut:
-    row = db.execute("SELECT id FROM workout_set WHERE id = ?", (set_id,)).fetchone()
-    if row is None:
-        raise HTTPException(status_code=404, detail="세트를 찾을 수 없습니다")
+    owned = _owned_set(db, user, set_id)
     data = body.model_dump(exclude_unset=True)
-    # intent_muscle만 명시적 null 허용(= intent 해제). NOT NULL 필드의
-    # 명시적 null은 기존과 동일하게 무시한다.
-    if "intent_muscle" in data:
-        code = data.pop("intent_muscle")
-        data["intent_muscle_group_id"] = (
-            None if code is None else _intent_muscle_id(db, code)
-        )
+    # target만 명시적 null 허용(= 종목 기본 타겟으로 복귀). NOT NULL 필드의 명시적 null은 무시.
+    if "target" in data:
+        code = data.pop("target")
+        if code is None:
+            data["target_id"] = db.execute(
+                "SELECT default_target_id FROM exercise WHERE id = ?", (owned["exercise_id"],)
+            ).fetchone()[0]
+        else:
+            data["target_id"] = target_id_or_422(db, code)
     for key in ("weight_kg", "reps", "is_warmup"):
         if data.get(key) is None and key in data:
             del data[key]
@@ -195,10 +236,13 @@ def update_set(
 
 
 @router.delete("/sets/{set_id}", status_code=204)
-def delete_set(set_id: int, db: sqlite3.Connection = Depends(get_db)) -> None:
-    cur = db.execute("DELETE FROM workout_set WHERE id = ?", (set_id,))
-    if cur.rowcount == 0:
-        raise HTTPException(status_code=404, detail="세트를 찾을 수 없습니다")
+def delete_set(
+    set_id: int,
+    user: CurrentUser = Depends(require_auth),
+    db: sqlite3.Connection = Depends(get_db),
+) -> None:
+    _owned_set(db, user, set_id)
+    db.execute("DELETE FROM workout_set WHERE id = ?", (set_id,))
 
 
 _SESSION_SUMMARY_SQL = """
@@ -210,55 +254,69 @@ FROM workout_session s
 LEFT JOIN set_volume sv ON sv.session_id = s.id
 """
 
-# REGION_NAMES_KO(seed_exercises) 순서가 동률 시 최후 tie-break 기준 (§3.4)
-_REGION_ORDER = {region: i for i, region in enumerate(REGION_NAMES_KO)}
-
-# 세션×region 가중 볼륨(primary 1.0 / secondary 0.5, 웜업 제외)과
-# region 내 최대 단일 종목 가중 볼륨(동률 tie-break용)
-# §3.7A intent 규칙 미적용은 의도적 스코프: 스펙이 intent 반영 대상으로 열거한 것은
-# stats의 부위 귀속 쿼리(summary muscle_sets / volume per_muscle·per_region / muscles)뿐이고,
-# 세션 주부위 태그는 "무슨 운동을 구성했나"를 나타내는 종목 정적 매핑 기준을 유지한다.
-# intent 반영으로 바꾸려면 stats.py의 MUSCLE_ATTRIB를 재사용할 것.
-_MAIN_REGION_SQL = """
-SELECT session_id, region, SUM(ex_vol) AS vol, MAX(ex_vol) AS top_ex_vol
-FROM (
-    SELECT sv.session_id AS session_id, mg.region AS region,
-           SUM(sv.volume_kg * CASE em.role WHEN 'primary' THEN 1.0 ELSE 0.5 END)
-               AS ex_vol
-    FROM set_volume sv
-    JOIN exercise_muscle em ON em.exercise_id = sv.exercise_id
-    JOIN muscle_group mg ON mg.id = em.muscle_group_id
-    WHERE sv.is_warmup = 0 AND sv.session_id IN ({placeholders})
-    GROUP BY sv.session_id, mg.region, sv.exercise_id
-)
-GROUP BY session_id, region
+# 세션×부위 볼륨 (세트 타겟 100% 귀속, 웜업 제외) — 부위 라벨 판정 재료
+_REGION_VOLUME_SQL = """
+SELECT sv.session_id AS session_id, tp.region AS region, SUM(sv.volume_kg) AS vol
+FROM set_volume sv
+JOIN target_path tp ON tp.id = sv.target_id
+WHERE sv.is_warmup = 0 AND sv.session_id IN ({placeholders})
+GROUP BY sv.session_id, tp.region
 """
 
 
-def _main_regions(db: sqlite3.Connection, session_ids: list[int]) -> dict[int, str]:
-    """세션별 주부위 region. 가중 볼륨 최대 region — 동률이면 볼륨 큰 종목을
-    가진 region, 그래도 같으면 고정 region 순서. 항상 결정적."""
+def _region_fields(db: sqlite3.Connection, session_ids: list[int]) -> dict[int, dict]:
+    """세션별 {main_region, main_region_ko, region_label}. 볼륨 1위 부위, 2위가
+    SECOND_REGION_MIN_SHARE 이상이면 "1위·2위". 동률은 고정 부위 순서 — 항상 결정적."""
+    empty = {"main_region": None, "main_region_ko": None, "region_label": None}
     if not session_ids:
         return {}
     placeholders = ",".join("?" * len(session_ids))
     rows = db.execute(
-        _MAIN_REGION_SQL.format(placeholders=placeholders), session_ids
+        _REGION_VOLUME_SQL.format(placeholders=placeholders), session_ids
     ).fetchall()
-    best: dict[int, tuple[float, float, int]] = {}
-    result: dict[int, str] = {}
+    by_session: dict[int, list[tuple[float, str]]] = {}
     for r in rows:
-        key = (r["vol"], r["top_ex_vol"], -_REGION_ORDER[r["region"]])
-        if r["session_id"] not in best or key > best[r["session_id"]]:
-            best[r["session_id"]] = key
-            result[r["session_id"]] = r["region"]
-    return result
+        by_session.setdefault(r["session_id"], []).append((r["vol"], r["region"]))
+    out: dict[int, dict] = {sid: dict(empty) for sid in session_ids}
+    for sid, items in by_session.items():
+        total = sum(v for v, _ in items)
+        if total <= 0:
+            continue
+        items.sort(key=lambda x: (-x[0], _REGION_ORDER[x[1]]))
+        regions = [items[0][1]]
+        if len(items) > 1 and items[1][0] >= total * SECOND_REGION_MIN_SHARE:
+            regions.append(items[1][1])
+        out[sid] = {
+            "main_region": regions[0],
+            "main_region_ko": REGION_NAMES_KO[regions[0]],
+            "region_label": "·".join(REGION_NAMES_KO[r] for r in regions),
+        }
+    return out
 
 
-def _region_fields(region: str | None) -> dict:
-    return {
-        "main_region": region,
-        "main_region_ko": REGION_NAMES_KO[region] if region is not None else None,
-    }
+def list_sessions_for(
+    db: sqlite3.Connection,
+    user_id: int,
+    date_from: str | None,
+    date_to: str | None,
+    limit: int,
+    offset: int,
+) -> list[SessionSummary]:
+    """사용자 범위 세션 목록 — 본인 조회와 관리자 조회(admin 라우터)가 공유."""
+    rows = db.execute(
+        _SESSION_SUMMARY_SQL
+        + """
+        WHERE s.user_id = :uid
+          AND (:date_from IS NULL OR s.date >= :date_from)
+          AND (:date_to IS NULL OR s.date <= :date_to)
+        GROUP BY s.id
+        ORDER BY s.date DESC, s.id DESC
+        LIMIT :limit OFFSET :offset
+        """,
+        {"uid": user_id, "date_from": date_from, "date_to": date_to, "limit": limit, "offset": offset},
+    ).fetchall()
+    regions = _region_fields(db, [r["id"] for r in rows])
+    return [SessionSummary(**dict(r), **regions[r["id"]]) for r in rows]
 
 
 @router.get("/sessions", response_model=list[SessionSummary])
@@ -267,54 +325,39 @@ def list_sessions(
     date_to: str | None = Query(default=None, alias="to"),
     limit: int = Query(default=50, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
+    user: CurrentUser = Depends(require_auth),
     db: sqlite3.Connection = Depends(get_db),
 ) -> list[SessionSummary]:
-    rows = db.execute(
-        _SESSION_SUMMARY_SQL
-        + """
-        WHERE (:date_from IS NULL OR s.date >= :date_from)
-          AND (:date_to IS NULL OR s.date <= :date_to)
-        GROUP BY s.id
-        ORDER BY s.date DESC, s.id DESC
-        LIMIT :limit OFFSET :offset
-        """,
-        {"date_from": date_from, "date_to": date_to, "limit": limit, "offset": offset},
-    ).fetchall()
-    regions = _main_regions(db, [r["id"] for r in rows])
-    return [
-        SessionSummary(**dict(r), **_region_fields(regions.get(r["id"]))) for r in rows
-    ]
+    return list_sessions_for(db, user.id, date_from, date_to, limit, offset)
 
 
-def _session_summary(db: sqlite3.Connection, session_id: int) -> SessionSummary | None:
+def _session_summary(db: sqlite3.Connection, user_id: int, session_id: int) -> SessionSummary | None:
     row = db.execute(
-        _SESSION_SUMMARY_SQL + " WHERE s.id = ? GROUP BY s.id", (session_id,)
+        _SESSION_SUMMARY_SQL + " WHERE s.id = ? AND s.user_id = ? GROUP BY s.id",
+        (session_id, user_id),
     ).fetchone()
     if row is None:
         return None
-    region = _main_regions(db, [session_id]).get(session_id)
-    return SessionSummary(**dict(row), **_region_fields(region))
+    regions = _region_fields(db, [session_id])
+    return SessionSummary(**dict(row), **regions[session_id])
 
 
-@router.get("/sessions/{session_id}", response_model=SessionDetail)
-def get_session(
-    session_id: int, db: sqlite3.Connection = Depends(get_db)
-) -> SessionDetail:
-    summary = _session_summary(db, session_id)
+def session_detail_for(db: sqlite3.Connection, user_id: int, session_id: int) -> SessionDetail:
+    summary = _session_summary(db, user_id, session_id)
     if summary is None:
         raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다")
     session_created_at = db.execute(
         "SELECT created_at FROM workout_session WHERE id = ?", (session_id,)
     ).fetchone()["created_at"]
     rows = db.execute(
-        """
+        f"""
         SELECT ws.id, ws.client_id, ws.exercise_id, ws.set_index, ws.weight_kg,
                ws.reps, ws.is_warmup, ws.note, ws.created_at, sv.volume_kg, e.name_ko,
-               img.code AS intent_muscle, img.name_ko AS intent_muscle_ko
+               dt.code AS exercise_default_target, {_TARGET_COLS}
         FROM workout_set ws
         JOIN set_volume sv ON sv.set_id = ws.id
         JOIN exercise e ON e.id = ws.exercise_id
-        LEFT JOIN muscle_group img ON img.id = ws.intent_muscle_group_id
+        {_TARGET_JOINS}
         WHERE ws.session_id = ?
         ORDER BY ws.set_index
         """,
@@ -325,7 +368,10 @@ def get_session(
         group = groups.get(r["exercise_id"])
         if group is None:
             group = SessionExerciseGroup(
-                exercise_id=r["exercise_id"], name_ko=r["name_ko"], sets=[]
+                exercise_id=r["exercise_id"],
+                name_ko=r["name_ko"],
+                default_target=r["exercise_default_target"] or r["target"],
+                sets=[],
             )
             groups[r["exercise_id"]] = group
         group.sets.append(
@@ -339,8 +385,8 @@ def get_session(
                 volume_kg=r["volume_kg"],
                 note=r["note"],
                 created_at=r["created_at"],
-                intent_muscle=r["intent_muscle"],
-                intent_muscle_ko=r["intent_muscle_ko"],
+                target=r["target"],
+                target_ko=r["target_ko"],
             )
         )
     return SessionDetail(
@@ -350,12 +396,24 @@ def get_session(
     )
 
 
+@router.get("/sessions/{session_id}", response_model=SessionDetail)
+def get_session(
+    session_id: int,
+    user: CurrentUser = Depends(require_auth),
+    db: sqlite3.Connection = Depends(get_db),
+) -> SessionDetail:
+    return session_detail_for(db, user.id, session_id)
+
+
 @router.patch("/sessions/{session_id}", response_model=SessionSummary)
 def update_session(
-    session_id: int, body: SessionUpdate, db: sqlite3.Connection = Depends(get_db)
+    session_id: int,
+    body: SessionUpdate,
+    user: CurrentUser = Depends(require_auth),
+    db: sqlite3.Connection = Depends(get_db),
 ) -> SessionSummary:
     row = db.execute(
-        "SELECT id FROM workout_session WHERE id = ?", (session_id,)
+        "SELECT id FROM workout_session WHERE id = ? AND user_id = ?", (session_id, user.id)
     ).fetchone()
     if row is None:
         raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다")
@@ -366,42 +424,57 @@ def update_session(
             f"UPDATE workout_session SET {assignments} WHERE id = ?",
             (*data.values(), session_id),
         )
-    summary = _session_summary(db, session_id)
+    summary = _session_summary(db, user.id, session_id)
     assert summary is not None
     return summary
 
 
 @router.delete("/sessions/{session_id}", status_code=204)
-def delete_session(session_id: int, db: sqlite3.Connection = Depends(get_db)) -> None:
-    cur = db.execute("DELETE FROM workout_session WHERE id = ?", (session_id,))
+def delete_session(
+    session_id: int,
+    user: CurrentUser = Depends(require_auth),
+    db: sqlite3.Connection = Depends(get_db),
+) -> None:
+    cur = db.execute(
+        "DELETE FROM workout_session WHERE id = ? AND user_id = ?", (session_id, user.id)
+    )
     if cur.rowcount == 0:
         raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다")
+
+
+def list_bodyweight_for(db: sqlite3.Connection, user_id: int, limit: int) -> list[BodyWeightOut]:
+    rows = db.execute(
+        "SELECT id, date, weight_kg FROM body_weight_log WHERE user_id = ?"
+        " ORDER BY date DESC LIMIT ?",
+        (user_id, limit),
+    ).fetchall()
+    return [BodyWeightOut(**dict(r)) for r in rows]
 
 
 @router.get("/bodyweight", response_model=list[BodyWeightOut])
 def list_bodyweight(
     limit: int = Query(default=30, ge=1, le=1000),
+    user: CurrentUser = Depends(require_auth),
     db: sqlite3.Connection = Depends(get_db),
 ) -> list[BodyWeightOut]:
-    rows = db.execute(
-        "SELECT id, date, weight_kg FROM body_weight_log ORDER BY date DESC LIMIT ?",
-        (limit,),
-    ).fetchall()
-    return [BodyWeightOut(**dict(r)) for r in rows]
+    return list_bodyweight_for(db, user.id, limit)
 
 
 @router.post("/bodyweight", response_model=BodyWeightOut)
 def upsert_bodyweight(
-    body: BodyWeightUpsert, db: sqlite3.Connection = Depends(get_db)
+    body: BodyWeightUpsert,
+    user: CurrentUser = Depends(require_auth),
+    db: sqlite3.Connection = Depends(get_db),
 ) -> BodyWeightOut:
     db.execute(
         """
-        INSERT INTO body_weight_log (date, weight_kg) VALUES (?, ?)
-        ON CONFLICT(date) DO UPDATE SET weight_kg = excluded.weight_kg
+        INSERT INTO body_weight_log (user_id, date, weight_kg) VALUES (?, ?, ?)
+        ON CONFLICT(user_id, date) DO UPDATE SET weight_kg = excluded.weight_kg
         """,
-        (body.date, body.weight_kg),
+        (user.id, body.date, body.weight_kg),
     )
     row = db.execute(
-        "SELECT id, date, weight_kg FROM body_weight_log WHERE date = ?", (body.date,)
+        "SELECT id, date, weight_kg FROM body_weight_log WHERE user_id = ? AND date = ?",
+        (user.id, body.date),
     ).fetchone()
     return BodyWeightOut(**dict(row))

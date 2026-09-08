@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse, Response
 from starlette.background import BackgroundTask
 
+from ..auth import CurrentUser, require_admin, require_auth
 from ..db import E1RM_EXPR, get_db
 from ..schemas import (
     DATE_PATTERN,
@@ -36,7 +37,7 @@ from ..schemas import (
     VolumePoint,
     WeekVolumePoint,
 )
-from ..seed_exercises import REGIONS
+from ..seed_data.targets import REGIONS
 
 router = APIRouter(prefix="/api", tags=["stats"])
 
@@ -45,27 +46,9 @@ WEEK_EXPR = (
     "DATE(sv.date, '-' || ((CAST(STRFTIME('%w', sv.date) AS INTEGER) + 6) % 7)"
     " || ' days')"
 )
-# §3.7 부위 귀속 (§6.1의 확장, 단일 규칙) — 세트×근육 전개 파생 테이블.
-# intent NULL 세트: 종목 매핑 primary 1.0 / secondary 0.5 (기존 규칙 그대로).
-# intent 지정 세트: intent 근육 1.0 + 그 종목 매핑의 나머지 근육 전부
-#   (원래 primary 포함, intent 제외) 0.5. intent가 매핑에 없는 근육이어도 허용.
-# 별칭을 sv로 유지해 기존 _filters(sv.date/sv.is_warmup)·WEEK_EXPR과 그대로 호환.
-MUSCLE_ATTRIB = """(
-    SELECT sv.date AS date, sv.is_warmup AS is_warmup,
-           sv.volume_kg AS volume_kg,
-           em.muscle_group_id AS muscle_group_id,
-           CASE WHEN sv.intent_muscle_group_id IS NULL
-                THEN CASE em.role WHEN 'primary' THEN 1.0 ELSE 0.5 END
-                ELSE 0.5 END AS w
-    FROM set_volume sv
-    JOIN exercise_muscle em ON em.exercise_id = sv.exercise_id
-    WHERE sv.intent_muscle_group_id IS NULL
-       OR em.muscle_group_id != sv.intent_muscle_group_id
-    UNION ALL
-    SELECT sv.date, sv.is_warmup, sv.volume_kg, sv.intent_muscle_group_id, 1.0
-    FROM set_volume sv
-    WHERE sv.intent_muscle_group_id IS NOT NULL
-)"""
+# §10.2 부위 귀속 (단일 규칙): 세트 볼륨은 그 세트의 타겟에 100%. target_path가
+# 타겟 → 근육(level 2) → 부위(region) 경로를 준다. 별칭 sv 유지 — _filters·WEEK_EXPR 호환.
+TARGET_JOIN = "set_volume sv JOIN target_path tp ON tp.id = sv.target_id"
 
 
 def _effective_today() -> date:
@@ -74,9 +57,9 @@ def _effective_today() -> date:
 
 
 def _filters(
-    from_: str | None, to: str | None, include_warmup: bool
+    user_id: int, from_: str | None, to: str | None, include_warmup: bool
 ) -> tuple[str, list]:
-    clauses, params = [], []
+    clauses, params = ["sv.user_id = ?"], [user_id]
     if not include_warmup:
         clauses.append("sv.is_warmup = 0")
     if from_:
@@ -85,13 +68,16 @@ def _filters(
     if to:
         clauses.append("sv.date <= ?")
         params.append(to)
-    return " AND ".join(clauses) or "1=1", params
+    return " AND ".join(clauses), params
 
 
-def _muscle_meta(db: sqlite3.Connection) -> list[sqlite3.Row]:
-    return db.execute(
-        "SELECT code, name_ko, region FROM muscle_group ORDER BY sort_order"
-    ).fetchall()
+def _muscle_codes(db: sqlite3.Connection) -> list[str]:
+    return [
+        r["code"]
+        for r in db.execute(
+            "SELECT code FROM muscle_group WHERE level = 2 ORDER BY sort_order"
+        ).fetchall()
+    ]
 
 
 def _best_set(sets: list[sqlite3.Row], column: str) -> sqlite3.Row | None:
@@ -108,12 +94,12 @@ def _best_set(sets: list[sqlite3.Row], column: str) -> sqlite3.Row | None:
 
 
 def _pr_events(
-    db: sqlite3.Connection, exercise_id: int | None = None
+    db: sqlite3.Connection, user_id: int, exercise_id: int | None = None
 ) -> tuple[list[dict], dict[int, dict]]:
     """§6.3: on-the-fly, strictly greater, 종목의 첫 세션은 베이스라인,
-    PR 히스토리는 하루×종목×종류당 최고 1건. weight=0·웜업 세트 제외."""
-    where = "sv.is_warmup = 0 AND sv.weight_kg > 0"
-    params: list = []
+    PR 히스토리는 하루×종목×종류당 최고 1건. weight=0·웜업 세트 제외. 사용자 범위."""
+    where = "sv.user_id = ? AND sv.is_warmup = 0 AND sv.weight_kg > 0"
+    params: list = [user_id]
     if exercise_id is not None:
         where += " AND sv.exercise_id = ?"
         params.append(exercise_id)
@@ -213,7 +199,7 @@ def _feed(events: list[dict], limit: int) -> list[PrEvent]:
 
 
 def _week_volumes(
-    db: sqlite3.Connection, cur_ws: date
+    db: sqlite3.Connection, user_id: int, cur_ws: date
 ) -> tuple[float, float, list[WeekVolumePoint]]:
     """(이번 주 볼륨, 전주 볼륨, 최근 8주 스파크라인) — 웜업 제외."""
     weeks = [cur_ws - timedelta(weeks=i) for i in range(7, -1, -1)]
@@ -221,10 +207,10 @@ def _week_volumes(
         f"""
         SELECT {WEEK_EXPR} AS ws, SUM(sv.volume_kg) AS vol
         FROM set_volume sv
-        WHERE sv.is_warmup = 0 AND sv.date >= ?
+        WHERE sv.user_id = ? AND sv.is_warmup = 0 AND sv.date >= ?
         GROUP BY ws
         """,
-        (weeks[0].isoformat(),),
+        (user_id, weeks[0].isoformat()),
     ).fetchall()
     by_week = {r["ws"]: r["vol"] for r in rows}
     sparkline = [
@@ -239,36 +225,30 @@ def _week_volumes(
     return cur_vol, prev_vol, sparkline
 
 
-def _muscle_sets_since(db: sqlite3.Connection, since: str) -> list[MuscleSetCount]:
-    """부위별 가중 세트 수 (§3.7 MUSCLE_ATTRIB 단일 규칙, 웜업 제외), 많은 순."""
+def _muscle_sets_since(db: sqlite3.Connection, user_id: int, since: str) -> list[MuscleSetCount]:
+    """근육(level 2) 단위 세트 수 (세부 타겟은 근육으로 합산, 웜업 제외), 많은 순."""
     rows = db.execute(
         f"""
-        SELECT mg.code AS code, mg.name_ko AS name_ko, mg.region AS region,
-               SUM(sv.w) AS weighted_sets
-        FROM {MUSCLE_ATTRIB} sv
-        JOIN muscle_group mg ON mg.id = sv.muscle_group_id
-        WHERE sv.is_warmup = 0 AND sv.date >= ?
-        GROUP BY mg.code
-        ORDER BY weighted_sets DESC
+        SELECT tp.muscle_code AS code, tp.muscle_name_ko AS name_ko, tp.region AS region,
+               COUNT(*) AS set_count
+        FROM {TARGET_JOIN}
+        WHERE sv.user_id = ? AND sv.is_warmup = 0 AND sv.date >= ?
+        GROUP BY tp.muscle_code
+        ORDER BY set_count DESC, tp.muscle_code
         """,
-        (since,),
+        (user_id, since),
     ).fetchall()
-    return [
-        MuscleSetCount(
-            code=r["code"], name_ko=r["name_ko"], region=r["region"],
-            weighted_sets=round(r["weighted_sets"], 1),
-        )
-        for r in rows
-    ]
+    return [MuscleSetCount(**dict(r)) for r in rows]
 
 
-def _frequency(db: sqlite3.Connection, today: date, cur_ws: date) -> FrequencyStats:
+def _frequency(db: sqlite3.Connection, user_id: int, today: date, cur_ws: date) -> FrequencyStats:
     """주 운동일수·weekly streak·마지막 운동 후 경과일 (§6.2-E).
     운동일 = 웜업 아닌 세트가 있는 날 — 웜업 전용일은 운동일이 아니다."""
     dates = [
         r["d"]
         for r in db.execute(
-            "SELECT DISTINCT sv.date AS d FROM set_volume sv WHERE sv.is_warmup = 0"
+            "SELECT DISTINCT sv.date AS d FROM set_volume sv WHERE sv.user_id = ? AND sv.is_warmup = 0",
+            (user_id,),
         ).fetchall()
     ]
     days_this_week = sum(1 for d in dates if d >= cur_ws.isoformat())
@@ -290,7 +270,7 @@ def _frequency(db: sqlite3.Connection, today: date, cur_ws: date) -> FrequencySt
     )
 
 
-def _totals(db: sqlite3.Connection) -> TotalStats:
+def _totals(db: sqlite3.Connection, user_id: int) -> TotalStats:
     """누적 tonnage·세션·세트·reps — §6.1 기본 집계 대상(웜업 제외)과 동일 기준이라
     웜업 전용 세션·빈 세션은 세션 수에서 빠진다."""
     row = db.execute(
@@ -298,8 +278,9 @@ def _totals(db: sqlite3.Connection) -> TotalStats:
         SELECT COALESCE(SUM(sv.volume_kg), 0) AS tonnage,
                COUNT(DISTINCT sv.session_id) AS sessions,
                COUNT(*) AS sets, COALESCE(SUM(sv.reps), 0) AS reps
-        FROM set_volume sv WHERE sv.is_warmup = 0
-        """
+        FROM set_volume sv WHERE sv.user_id = ? AND sv.is_warmup = 0
+        """,
+        (user_id,),
     ).fetchone()
     return TotalStats(
         tonnage_kg=round(row["tonnage"], 2),
@@ -310,23 +291,25 @@ def _totals(db: sqlite3.Connection) -> TotalStats:
 
 
 @router.get("/stats/summary", response_model=StatsSummaryOut)
-def stats_summary(db: sqlite3.Connection = Depends(get_db)) -> StatsSummaryOut:
+def stats_summary(
+    user: CurrentUser = Depends(require_auth), db: sqlite3.Connection = Depends(get_db)
+) -> StatsSummaryOut:
     today = _effective_today()
     cur_ws = today - timedelta(days=today.weekday())
     week_start = cur_ws.isoformat()
 
-    cur_vol, prev_vol, sparkline = _week_volumes(db, cur_ws)
+    cur_vol, prev_vol, sparkline = _week_volumes(db, user.id, cur_ws)
     change_pct = round((cur_vol - prev_vol) / prev_vol * 100, 1) if prev_vol > 0 else None
 
-    events, _ = _pr_events(db)
+    events, _ = _pr_events(db, user.id)
 
     # 이번 주 세션·세트 수 — muscle_sets·days_this_week와 같은 기준(웜업 제외, 주 시작 이후)
     week_row = db.execute(
         """
         SELECT COUNT(DISTINCT sv.session_id) AS sessions, COUNT(*) AS sets
-        FROM set_volume sv WHERE sv.is_warmup = 0 AND sv.date >= ?
+        FROM set_volume sv WHERE sv.user_id = ? AND sv.is_warmup = 0 AND sv.date >= ?
         """,
-        (week_start,),
+        (user.id, week_start),
     ).fetchone()
 
     return StatsSummaryOut(
@@ -341,10 +324,10 @@ def stats_summary(db: sqlite3.Connection = Depends(get_db)) -> StatsSummaryOut:
             pr_count=sum(1 for e in events if e["date"] >= week_start),
         ),
         weekly_sparkline=sparkline,
-        muscle_sets_this_week=_muscle_sets_since(db, week_start),
+        muscle_sets_this_week=_muscle_sets_since(db, user.id, week_start),
         recent_prs=_feed(events, 3),
-        frequency=_frequency(db, today, cur_ws),
-        totals=_totals(db),
+        frequency=_frequency(db, user.id, today, cur_ws),
+        totals=_totals(db, user.id),
     )
 
 
@@ -354,6 +337,7 @@ def stats_volume(
     from_: str | None = Query(default=None, alias="from", pattern=DATE_PATTERN),
     to: str | None = Query(default=None, pattern=DATE_PATTERN),
     include_warmup: bool = False,
+    user: CurrentUser = Depends(require_auth),
     db: sqlite3.Connection = Depends(get_db),
 ) -> StatsVolumeOut:
     period_expr = {
@@ -361,7 +345,7 @@ def stats_volume(
         "week": WEEK_EXPR,
         "month": "STRFTIME('%Y-%m', sv.date)",
     }[granularity]
-    where, params = _filters(from_, to, include_warmup)
+    where, params = _filters(user.id, from_, to, include_warmup)
 
     total_rows = db.execute(
         f"""
@@ -373,23 +357,22 @@ def stats_volume(
     ).fetchall()
     muscle_rows = db.execute(
         f"""
-        SELECT {period_expr} AS period, mg.code AS code, mg.region AS region,
-               SUM(sv.volume_kg * sv.w) AS vol
-        FROM {MUSCLE_ATTRIB} sv
-        JOIN muscle_group mg ON mg.id = sv.muscle_group_id
+        SELECT {period_expr} AS period, tp.muscle_code AS code, tp.region AS region,
+               SUM(sv.volume_kg) AS vol
+        FROM {TARGET_JOIN}
         WHERE {where}
-        GROUP BY period, mg.code
+        GROUP BY period, tp.muscle_code
         """,
         params,
     ).fetchall()
 
-    meta = _muscle_meta(db)
+    codes = _muscle_codes(db)
     points: dict[str, VolumePoint] = {}
     for r in total_rows:
         points[r["period"]] = VolumePoint(
             period=r["period"],
             total_volume=round(r["vol"], 2),
-            per_muscle={m["code"]: 0.0 for m in meta},
+            per_muscle={c: 0.0 for c in codes},
             per_region={region: 0.0 for region in REGIONS},
         )
     for r in muscle_rows:
@@ -408,32 +391,53 @@ def stats_muscles(
     from_: str | None = Query(default=None, alias="from", pattern=DATE_PATTERN),
     to: str | None = Query(default=None, pattern=DATE_PATTERN),
     include_warmup: bool = False,
+    user: CurrentUser = Depends(require_auth),
     db: sqlite3.Connection = Depends(get_db),
 ) -> StatsMusclesOut:
-    where, params = _filters(from_, to, include_warmup)
-    rows = db.execute(
-        f"""
-        SELECT mg.code AS code,
-               SUM(sv.volume_kg * sv.w) AS vol,
-               SUM(sv.w) AS sets
-        FROM {MUSCLE_ATTRIB} sv
-        JOIN muscle_group mg ON mg.id = sv.muscle_group_id
-        WHERE {where}
-        GROUP BY mg.code
-        """,
-        params,
+    """타겟 행 전부(level 2·3)의 볼륨·세트 수. level 2 = 자기 + 세부 합산, level 3 = 자기만.
+    프론트가 부위 → 근육 → 세부로 드릴다운한다 (부위 합계는 level 2 합)."""
+    where, params = _filters(user.id, from_, to, include_warmup)
+    by_muscle = {
+        r["code"]: r
+        for r in db.execute(
+            f"""
+            SELECT tp.muscle_code AS code, SUM(sv.volume_kg) AS vol, COUNT(*) AS sets
+            FROM {TARGET_JOIN} WHERE {where} GROUP BY tp.muscle_code
+            """,
+            params,
+        ).fetchall()
+    }
+    by_detail = {
+        r["code"]: r
+        for r in db.execute(
+            f"""
+            SELECT tp.code AS code, SUM(sv.volume_kg) AS vol, COUNT(*) AS sets
+            FROM {TARGET_JOIN} WHERE {where} AND tp.level = 3 GROUP BY tp.code
+            """,
+            params,
+        ).fetchall()
+    }
+    targets = db.execute(
+        """
+        SELECT t.code, t.name_ko, t.region, t.level, p.code AS parent_code
+        FROM muscle_group t LEFT JOIN muscle_group p ON p.id = t.parent_id
+        ORDER BY t.sort_order, t.id
+        """
     ).fetchall()
-    by_code = {r["code"]: r for r in rows}
-    points = [
-        MusclePoint(
-            code=m["code"],
-            name_ko=m["name_ko"],
-            region=m["region"],
-            volume_kg=round(by_code[m["code"]]["vol"], 2) if m["code"] in by_code else 0.0,
-            set_count=round(by_code[m["code"]]["sets"], 1) if m["code"] in by_code else 0.0,
+    points = []
+    for t in targets:
+        src = by_muscle.get(t["code"]) if t["level"] == 2 else by_detail.get(t["code"])
+        points.append(
+            MusclePoint(
+                code=t["code"],
+                name_ko=t["name_ko"],
+                region=t["region"],
+                level=t["level"],
+                parent_code=t["parent_code"],
+                volume_kg=round(src["vol"], 2) if src else 0.0,
+                set_count=src["sets"] if src else 0,
+            )
         )
-        for m in _muscle_meta(db)
-    ]
     return StatsMusclesOut(points=points)
 
 
@@ -443,15 +447,17 @@ def stats_exercise(
     from_: str | None = Query(default=None, alias="from", pattern=DATE_PATTERN),
     to: str | None = Query(default=None, pattern=DATE_PATTERN),
     include_warmup: bool = False,
+    user: CurrentUser = Depends(require_auth),
     db: sqlite3.Connection = Depends(get_db),
 ) -> StatsExerciseOut:
     exercise = db.execute(
-        "SELECT id, name_ko FROM exercise WHERE id = ?", (exercise_id,)
+        "SELECT id, name_ko FROM exercise WHERE id = ? AND (user_id IS NULL OR user_id = ?)",
+        (exercise_id, user.id),
     ).fetchone()
     if exercise is None:
         raise HTTPException(status_code=404, detail="종목을 찾을 수 없습니다")
 
-    where, params = _filters(from_, to, include_warmup)
+    where, params = _filters(user.id, from_, to, include_warmup)
     rows = db.execute(
         f"""
         SELECT sv.session_id AS session_id, MIN(sv.date) AS date,
@@ -476,7 +482,7 @@ def stats_exercise(
         for r in rows
     ]
 
-    _, bests = _pr_events(db, exercise_id=exercise_id)
+    _, bests = _pr_events(db, user.id, exercise_id=exercise_id)
     best = bests.get(exercise_id) or {}
 
     return StatsExerciseOut(
@@ -491,6 +497,7 @@ def stats_exercise(
 @router.get("/stats/family", response_model=StatsFamilyOut)
 def stats_family(
     base_movement: str = Query(min_length=1, max_length=50),
+    user: CurrentUser = Depends(require_auth),
     db: sqlite3.Connection = Depends(get_db),
 ) -> StatsFamilyOut:
     """§3.6 계열 합산 — 같은 base_movement 종목들의 날짜별 합산 볼륨 + 최고 e1RM.
@@ -498,15 +505,14 @@ def stats_family(
     분해로 갈라진 기록을 합쳐 보는 창구. PR·정체성은 여전히 exercise_id 기준이며,
     이 응답은 집계 뷰일 뿐이다. 웜업 제외, e1RM 규칙은 §6.1 그대로.
 
-    참여 종목 명부(exercises)는 활성만, 볼륨 합산(points)은 아카이브 종목의
-    과거 세트도 포함한다 — 분해 후 옛 통합 종목을 아카이브하는 전형적 경로에서
-    그 과거 볼륨이 계열 차트에서 사라지면 이 기능의 목적(§3.6)과 상충하고,
-    다른 stats(전부 set_volume 기반, 아카이브 포함)와도 불일치하기 때문.
+    참여 종목 명부(exercises)는 활성·가시(내장 + 내 커스텀)만, 볼륨 합산(points)은
+    아카이브 종목의 과거 세트도 포함한다 — 다른 stats(전부 set_volume 기반)와 동일.
     """
     exercises = db.execute(
         "SELECT id, name_ko FROM exercise"
-        " WHERE base_movement = ? AND is_archived = 0 ORDER BY id",
-        (base_movement,),
+        " WHERE base_movement = ? AND is_archived = 0 AND (user_id IS NULL OR user_id = ?)"
+        " ORDER BY id",
+        (base_movement, user.id),
     ).fetchall()
     if not exercises:
         # 해당 계열 활성 종목 없음 — 404 대신 빈 결과 (계약 형태 고정)
@@ -518,10 +524,10 @@ def stats_family(
                MAX({E1RM_EXPR}) AS top_e1rm
         FROM set_volume sv
         JOIN exercise e ON e.id = sv.exercise_id
-        WHERE sv.is_warmup = 0 AND e.base_movement = ?
+        WHERE sv.user_id = ? AND sv.is_warmup = 0 AND e.base_movement = ?
         GROUP BY sv.date ORDER BY sv.date
         """,
-        (base_movement,),
+        (user.id, base_movement),
     ).fetchall()
     return StatsFamilyOut(
         base_movement=base_movement,
@@ -538,8 +544,10 @@ def stats_family(
 
 
 @router.get("/stats/prs", response_model=StatsPrsOut)
-def stats_prs(db: sqlite3.Connection = Depends(get_db)) -> StatsPrsOut:
-    events, bests = _pr_events(db)
+def stats_prs(
+    user: CurrentUser = Depends(require_auth), db: sqlite3.Connection = Depends(get_db)
+) -> StatsPrsOut:
+    events, bests = _pr_events(db, user.id)
     records = [
         ExercisePrRow(
             exercise_id=ex_id,
@@ -555,6 +563,7 @@ def stats_prs(db: sqlite3.Connection = Depends(get_db)) -> StatsPrsOut:
 @router.get("/stats/calendar", response_model=StatsCalendarOut)
 def stats_calendar(
     months: int = Query(default=6, ge=1, le=60),
+    user: CurrentUser = Depends(require_auth),
     db: sqlite3.Connection = Depends(get_db),
 ) -> StatsCalendarOut:
     today = _effective_today()
@@ -563,10 +572,10 @@ def stats_calendar(
         SELECT sv.date AS date, SUM(sv.volume_kg) AS vol,
                COUNT(DISTINCT sv.session_id) AS session_count
         FROM set_volume sv
-        WHERE sv.is_warmup = 0 AND sv.date >= DATE(?, ?)
+        WHERE sv.user_id = ? AND sv.is_warmup = 0 AND sv.date >= DATE(?, ?)
         GROUP BY sv.date ORDER BY sv.date
         """,
-        (today.isoformat(), f"-{months} months"),
+        (user.id, today.isoformat(), f"-{months} months"),
     ).fetchall()
     return StatsCalendarOut(
         points=[
@@ -581,7 +590,10 @@ def stats_calendar(
 
 
 @router.get("/export/db")
-def export_db(db: sqlite3.Connection = Depends(get_db)) -> FileResponse:
+def export_db(
+    user: CurrentUser = Depends(require_admin), db: sqlite3.Connection = Depends(get_db)
+) -> FileResponse:
+    """DB 스냅샷은 모든 사용자의 데이터를 담으므로 관리자만 (§10.5)."""
     tmp_dir = tempfile.mkdtemp(prefix="volume-app-export-")
     filename = f"app-{_effective_today():%Y%m%d}.db"
     snapshot_path = os.path.join(tmp_dir, filename)
@@ -594,51 +606,50 @@ def export_db(db: sqlite3.Connection = Depends(get_db)) -> FileResponse:
     )
 
 
+CSV_COLUMNS = [
+    "date", "exercise_name_ko", "name_en", "set_index", "weight_kg",
+    "reps", "is_warmup", "volume_kg",
+    # §10.2 세트 타겟 3단계 (세부 코드 / 근육 코드 / 부위)
+    "target", "target_muscle", "target_region", "note",
+    # §10.3 계열·태그·머신
+    "base_movement", "tags", "machine",
+]
+
+
 @router.get("/export/csv")
-def export_csv(db: sqlite3.Connection = Depends(get_db)) -> Response:
+def export_csv(
+    user: CurrentUser = Depends(require_auth), db: sqlite3.Connection = Depends(get_db)
+) -> Response:
     rows = db.execute(
         """
         SELECT sv.date AS date, e.name_ko AS name_ko, e.name_en AS name_en,
                ws.set_index AS set_index, ws.weight_kg AS weight_kg,
                ws.reps AS reps, ws.is_warmup AS is_warmup,
                sv.volume_kg AS volume_kg, ws.note AS note,
-               e.base_movement AS base_movement, e.equipment AS equipment,
-               e.support AS support, e.grip AS grip, e.angle AS angle,
-               img.code AS intent_muscle,
-               (SELECT GROUP_CONCAT(mg.code, ',')
-                FROM exercise_muscle em
-                JOIN muscle_group mg ON mg.id = em.muscle_group_id
-                WHERE em.exercise_id = sv.exercise_id AND em.role = 'primary'
-               ) AS primary_muscles
+               e.base_movement AS base_movement, e.tags AS tags, m.name_ko AS machine,
+               tp.code AS target, tp.muscle_code AS target_muscle, tp.region AS target_region
         FROM set_volume sv
         JOIN workout_set ws ON ws.id = sv.set_id
         JOIN exercise e ON e.id = sv.exercise_id
-        LEFT JOIN muscle_group img ON img.id = sv.intent_muscle_group_id
+        LEFT JOIN target_path tp ON tp.id = sv.target_id
+        LEFT JOIN machine m ON m.id = e.machine_id
+        WHERE sv.user_id = ?
         ORDER BY sv.date, sv.session_id, ws.set_index
-        """
+        """,
+        (user.id,),
     ).fetchall()
 
     buf = io.StringIO()
     writer = csv.writer(buf)
-    writer.writerow(
-        [
-            "date", "exercise_name_ko", "name_en", "set_index", "weight_kg",
-            "reps", "is_warmup", "volume_kg", "primary_muscles", "note",
-            # §3.6 속성 5종 (aliases 제외)
-            "base_movement", "equipment", "support", "grip", "angle",
-            # §3.7 기록 의도 주동근 — 끝에 추가
-            "intent_muscle",
-        ]
-    )
+    writer.writerow(CSV_COLUMNS)
     for r in rows:
         writer.writerow(
             [
                 r["date"], r["name_ko"], r["name_en"] or "", r["set_index"],
-                r["weight_kg"], r["reps"], r["is_warmup"],
-                round(r["volume_kg"], 2), r["primary_muscles"] or "", r["note"] or "",
-                r["base_movement"] or "", r["equipment"] or "", r["support"] or "",
-                r["grip"] or "", r["angle"] or "",
-                r["intent_muscle"] or "",
+                r["weight_kg"], r["reps"], r["is_warmup"], round(r["volume_kg"], 2),
+                r["target"] or "", r["target_muscle"] or "", r["target_region"] or "",
+                r["note"] or "",
+                r["base_movement"] or "", r["tags"] or "", r["machine"] or "",
             ]
         )
     return Response(

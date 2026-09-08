@@ -11,12 +11,6 @@ from pydantic import (
     model_validator,
 )
 
-MuscleCode = Literal[
-    "chest", "back", "lower_back", "shoulders", "biceps", "triceps",
-    "forearms", "quads", "hamstrings", "glutes", "calves", "abs",
-]
-MuscleRole = Literal["primary", "secondary"]
-
 
 def _check_quarter_step(v: float) -> float:
     if (v * 4) % 1 != 0:
@@ -39,19 +33,52 @@ DateStr = Annotated[
     AfterValidator(_check_iso_date),
 ]
 Name = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=50)]
-# §3.6 속성값 — 자유 텍스트 (enum 없음), 빈 문자열 대신 null 사용
+# §10.3 계열(base_movement) — 자유 텍스트, 빈 문자열 대신 null
 AttrValue = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=50)]
 # 쉼표 구분 별칭 목록이라 더 길게 허용
 AliasesValue = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)]
+# §10.2 타겟 코드 — 유효성은 DB(muscle_group.code)로 검증 (Literal 아님: 분류가 데이터)
+TargetCode = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=40)]
+# §10.1 계정
+Username = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=2, max_length=32, pattern=r"^[A-Za-z0-9_.-]+$"),
+]
+Password = Annotated[str, StringConstraints(min_length=4, max_length=128)]
+
+MAX_TAGS = 20
+MAX_TAG_LEN = 30
+
+
+def _clean_tags(tags: list[str]) -> list[str]:
+    out: list[str] = []
+    for t in tags:
+        t = t.strip()
+        if not t:
+            continue
+        if len(t) > MAX_TAG_LEN:
+            raise ValueError(f"태그는 {MAX_TAG_LEN}자 이하여야 합니다")
+        if t not in out:
+            out.append(t)
+    if len(out) > MAX_TAGS:
+        raise ValueError(f"태그는 {MAX_TAGS}개 이하여야 합니다")
+    return out
 
 
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-# ---------- Auth ----------
+# ---------- Auth (§10.1) ----------
+
+class RegisterRequest(StrictModel):
+    username: Username
+    password: Password
+    display_name: Name | None = None
+
 
 class LoginRequest(StrictModel):
+    username: str
     password: str
 
 
@@ -61,85 +88,99 @@ class LoginResponse(BaseModel):
     expires_in: int
 
 
-# ---------- Exercises ----------
-
-class MuscleAssignment(StrictModel):
-    code: MuscleCode
-    role: MuscleRole
+class PasswordChangeRequest(StrictModel):
+    current_password: str
+    new_password: Password
 
 
-def _validate_muscles(muscles: list[MuscleAssignment]) -> list[MuscleAssignment]:
-    codes = [m.code for m in muscles]
-    if len(codes) != len(set(codes)):
-        raise ValueError("같은 부위를 primary/secondary에 중복 지정할 수 없습니다")
-    if not any(m.role == "primary" for m in muscles):
-        raise ValueError("주동근(primary)을 1개 이상 지정해야 합니다")
-    return muscles
+class UserOut(BaseModel):
+    id: int
+    username: str
+    display_name: str
+    is_admin: bool
+    created_at: str
 
 
-class ExerciseAttrFields(StrictModel):
-    """§3.6 속성 6필드 — 생성·수정 요청 공통. 전부 선택 사항이며 PATCH에서 null = 값 비우기."""
+# ---------- Targets / Machines (§10.2, §10.4) ----------
 
-    base_movement: AttrValue | None = None
-    equipment: AttrValue | None = None
-    support: AttrValue | None = None
-    grip: AttrValue | None = None
-    angle: AttrValue | None = None
-    aliases: AliasesValue | None = None
+class TargetOut(BaseModel):
+    code: str
+    name_ko: str
+    region: str
+    level: int
+    parent_code: str | None = None
 
 
-class ExerciseCreate(ExerciseAttrFields):
+class MachineCreate(StrictModel):
+    brand: Name
+    model: Name
+    name_ko: Name | None = None
+    target: TargetCode | None = None
+
+
+class MachineOut(BaseModel):
+    id: int
+    brand: str
+    model: str
+    name_ko: str
+    target: str | None = None
+
+
+# ---------- Exercises (§10.3) ----------
+
+class ExerciseCreate(StrictModel):
     name_ko: Name
     name_en: Name | None = None
-    muscles: list[MuscleAssignment]
+    base_movement: AttrValue | None = None
+    tags: list[str] = []
+    default_target: TargetCode
+    machine_id: int | None = None
     bodyweight_factor: float = Field(default=0, ge=0, le=1)
     load_multiplier: float = Field(default=1, gt=0)
     note: str | None = None
+    aliases: AliasesValue | None = None
 
-    @field_validator("muscles")
+    @field_validator("tags")
     @classmethod
-    def muscles_valid(cls, v: list[MuscleAssignment]) -> list[MuscleAssignment]:
-        return _validate_muscles(v)
+    def tags_clean(cls, v: list[str]) -> list[str]:
+        return _clean_tags(v)
 
 
-class ExerciseUpdate(ExerciseAttrFields):
+class ExerciseUpdate(StrictModel):
     name_ko: Name | None = None
     name_en: Name | None = None
-    muscles: list[MuscleAssignment] | None = None
+    base_movement: AttrValue | None = None
+    tags: list[str] | None = None
+    default_target: TargetCode | None = None
+    machine_id: int | None = None  # 명시적 null = 머신 해제
     bodyweight_factor: float | None = Field(default=None, ge=0, le=1)
     load_multiplier: float | None = Field(default=None, gt=0)
     note: str | None = None
+    aliases: AliasesValue | None = None
     is_archived: bool | None = None
 
-    @field_validator("muscles")
+    @field_validator("tags")
     @classmethod
-    def muscles_valid(cls, v: list[MuscleAssignment] | None) -> list[MuscleAssignment] | None:
-        if v is None:
-            return v
-        return _validate_muscles(v)
-
-
-class MuscleOut(BaseModel):
-    code: str
-    role: str
+    def tags_clean(cls, v: list[str] | None) -> list[str] | None:
+        return None if v is None else _clean_tags(v)
 
 
 class ExerciseOut(BaseModel):
     id: int
     name_ko: str
     name_en: str | None = None
+    base_movement: str | None = None
+    tags: list[str]
+    default_target: str
+    default_target_ko: str
+    machine_id: int | None = None
+    machine_name: str | None = None
     bodyweight_factor: float
     load_multiplier: float
     is_builtin: bool
     is_archived: bool
+    is_own: bool  # 내 커스텀 종목 (수정·삭제 가능). 내장은 관리자만
     note: str | None = None
-    muscles: list[MuscleOut]
-    # §3.6 속성 — 속성은 분류용 메타데이터, 정체성은 행(exercise_id)
-    base_movement: str | None = None
-    equipment: str | None = None
-    support: str | None = None
-    grip: str | None = None
-    angle: str | None = None
     aliases: str | None = None
 
 
@@ -155,6 +196,14 @@ class LastRecordOut(BaseModel):
     sets: list[LastRecordSet]
 
 
+class FavoritesOut(BaseModel):
+    exercise_ids: list[int]
+
+
+class FavoritesReplace(StrictModel):
+    exercise_ids: list[int]
+
+
 # ---------- Sets ----------
 
 class SetCreate(StrictModel):
@@ -165,8 +214,8 @@ class SetCreate(StrictModel):
     reps: Reps
     is_warmup: bool = False
     new_session: bool = False
-    # §3.7 기록 의도 주동근 — null = 종목 기본 매핑 (유효 code만 허용, 위반 422)
-    intent_muscle: MuscleCode | None = None
+    # §10.2 세트 타겟 — 미지정/null = 종목 기본 타겟 (유효 code만, 위반 422)
+    target: TargetCode | None = None
     # §3.7-B 세션 직접 귀속 — 지정 시 lazy 생성 생략, 세션 date와 body date
     # 불일치·세션 부재는 422
     session_id: int | None = None
@@ -182,8 +231,8 @@ class SetUpdate(StrictModel):
     weight_kg: Weight | None = None
     reps: Reps | None = None
     is_warmup: bool | None = None
-    # §3.7 — 명시적 null = intent 해제 (종목 기본 매핑으로 복귀)
-    intent_muscle: MuscleCode | None = None
+    # §10.2 — 명시적 null = 종목 기본 타겟으로 되돌리기
+    target: TargetCode | None = None
 
 
 class SetOut(BaseModel):
@@ -200,9 +249,9 @@ class SetOut(BaseModel):
     volume_kg: float
     is_weight_pr: bool = False
     is_e1rm_pr: bool = False
-    # §3.7 기록 의도 주동근 (null 가능)
-    intent_muscle: str | None = None
-    intent_muscle_ko: str | None = None
+    # §10.2 세트 타겟 (항상 존재)
+    target: str
+    target_ko: str
 
 
 # ---------- Sessions ----------
@@ -214,10 +263,11 @@ class SessionSummary(BaseModel):
     total_volume: float
     exercise_count: int
     set_count: int
-    # 주부위: 가중 볼륨(primary 1.0 / secondary 0.5, 웜업 제외) 최대 region.
-    # 유효 세트가 없으면 둘 다 null
+    # §10.2 부위 라벨: 세트 타겟을 부위(region)로 합산해 1위(+2위가 25% 이상이면 함께).
+    # main_region = 1위 코드, region_label = "하체·등" 형태. 유효 세트가 없으면 전부 null
     main_region: str | None = None
     main_region_ko: str | None = None
+    region_label: str | None = None
 
 
 class SessionSetOut(BaseModel):
@@ -230,14 +280,14 @@ class SessionSetOut(BaseModel):
     volume_kg: float
     note: str | None = None
     created_at: str
-    # §3.7 기록 의도 주동근 (null 가능) — 세트 저장 응답(SetOut)과 동일 필드
-    intent_muscle: str | None = None
-    intent_muscle_ko: str | None = None
+    target: str
+    target_ko: str
 
 
 class SessionExerciseGroup(BaseModel):
     exercise_id: int
     name_ko: str
+    default_target: str
     sets: list[SessionSetOut]
 
 
@@ -290,10 +340,12 @@ class ThisWeekCard(BaseModel):
 
 
 class MuscleSetCount(BaseModel):
+    """근육(level 2) 단위 세트 수 — 세부 타겟은 근육으로 합산."""
+
     code: str
     name_ko: str
     region: str
-    weighted_sets: float
+    set_count: int
 
 
 class PrEvent(BaseModel):
@@ -331,7 +383,7 @@ class StatsSummaryOut(BaseModel):
 class VolumePoint(BaseModel):
     period: str
     total_volume: float
-    per_muscle: dict[str, float]
+    per_muscle: dict[str, float]  # 근육(level 2) 코드 → 볼륨 (세부는 근육으로 합산)
     per_region: dict[str, float]
 
 
@@ -341,11 +393,15 @@ class StatsVolumeOut(BaseModel):
 
 
 class MusclePoint(BaseModel):
+    """타겟 행 전부(level 2·3). level 2 값은 자기 + 세부 합산, level 3은 자기만."""
+
     code: str
     name_ko: str
     region: str
+    level: int
+    parent_code: str | None = None
     volume_kg: float
-    set_count: float
+    set_count: int
 
 
 class StatsMusclesOut(BaseModel):
@@ -412,3 +468,16 @@ class CalendarPoint(BaseModel):
 
 class StatsCalendarOut(BaseModel):
     points: list[CalendarPoint]
+
+
+# ---------- Admin (§10.5) ----------
+
+class AdminUserOut(BaseModel):
+    id: int
+    username: str
+    display_name: str
+    is_admin: bool
+    created_at: str
+    session_count: int
+    set_count: int
+    last_date: str | None = None

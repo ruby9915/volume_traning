@@ -1,6 +1,7 @@
 // fetch 래퍼 + 전 엔드포인트 typed 함수 + localStorage outbox (§5.4)
 
 import type {
+  AdminUser,
   ArchivedConflictDetail,
   BodyWeightCreateRequest,
   BodyWeightEntry,
@@ -11,13 +12,17 @@ import type {
   ExerciseStats,
   ExerciseUpdateRequest,
   FamilyStats,
+  Favorites,
   LastRecord,
   LoginResponse,
-  MuscleCode,
+  Machine,
+  MachineCreateRequest,
   MuscleStats,
   OutboxItem,
+  PasswordChangeRequest,
   PrStats,
   RangeParams,
+  RegisterRequest,
   SaveSetInput,
   SessionDetail,
   SessionListParams,
@@ -26,6 +31,9 @@ import type {
   SetCreateRequest,
   SetUpdateRequest,
   StatsSummary,
+  Target,
+  TargetCode,
+  User,
   VolumeStats,
   VolumeStatsParams,
   WorkoutSet,
@@ -95,7 +103,7 @@ export function tokenRemainingDays(): number | null {
 }
 
 function redirectToLogin(): void {
-  if (window.location.pathname !== "/login") {
+  if (window.location.pathname !== "/login" && window.location.pathname !== "/register") {
     window.location.href = "/login";
   }
 }
@@ -143,12 +151,12 @@ async function api<T>(
   return (text ? JSON.parse(text) : undefined) as T;
 }
 
-// ---------- Auth ----------
+// ---------- Auth (§10.1) ----------
 
-export async function login(password: string): Promise<LoginResponse> {
+export async function login(username: string, password: string): Promise<LoginResponse> {
   const res = await api<LoginResponse>(
     "/api/auth/login",
-    { method: "POST", body: JSON.stringify({ password }) },
+    { method: "POST", body: JSON.stringify({ username, password }) },
     { auth: false },
   );
   setToken(res.access_token, res.expires_in);
@@ -156,9 +164,58 @@ export async function login(password: string): Promise<LoginResponse> {
   return res;
 }
 
+export async function register(body: RegisterRequest): Promise<LoginResponse> {
+  const res = await api<LoginResponse>(
+    "/api/auth/register",
+    { method: "POST", body: JSON.stringify(body) },
+    { auth: false },
+  );
+  setToken(res.access_token, res.expires_in);
+  return res;
+}
+
+export function fetchMe(): Promise<User> {
+  return api("/api/auth/me");
+}
+
+/** 비밀번호 변경은 인증 실패(401)를 "현재 비밀번호 오류"로 보여줘야 하므로 자동 리다이렉트를 우회 */
+export async function changePassword(body: PasswordChangeRequest): Promise<void> {
+  const token = getToken();
+  const res = await fetch("/api/auth/password", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify(body),
+  });
+  if (res.status === 204) return;
+  let detail: unknown = res.statusText;
+  try {
+    detail = (await res.json()).detail;
+  } catch {
+    // body 없음
+  }
+  throw new ApiError(res.status, detail);
+}
+
 export function logout(): void {
   clearToken();
   redirectToLogin();
+}
+
+// ---------- Targets / Machines (§10.2, §10.4) ----------
+
+export function fetchTargets(): Promise<Target[]> {
+  return api("/api/targets");
+}
+
+export function fetchMachines(): Promise<Machine[]> {
+  return api("/api/machines");
+}
+
+export function createMachine(body: MachineCreateRequest): Promise<Machine> {
+  return api("/api/machines", { method: "POST", body: JSON.stringify(body) });
 }
 
 // ---------- Exercises ----------
@@ -193,6 +250,27 @@ export async function fetchLastRecord(exerciseId: number): Promise<LastRecord | 
   }
 }
 
+// ---------- Favorites (§10.3) ----------
+
+export function fetchFavorites(): Promise<Favorites> {
+  return api("/api/favorites");
+}
+
+export function addFavorite(exerciseId: number): Promise<Favorites> {
+  return api(`/api/favorites/${exerciseId}`, { method: "POST" });
+}
+
+export function removeFavorite(exerciseId: number): Promise<Favorites> {
+  return api(`/api/favorites/${exerciseId}`, { method: "DELETE" });
+}
+
+export function replaceFavorites(exerciseIds: number[]): Promise<Favorites> {
+  return api("/api/favorites", {
+    method: "PUT",
+    body: JSON.stringify({ exercise_ids: exerciseIds }),
+  });
+}
+
 // ---------- Outbox (§5.4) ----------
 
 type OutboxListener = (items: OutboxItem[]) => void;
@@ -220,17 +298,15 @@ export function getOutbox(): OutboxItem[] {
   return readOutbox();
 }
 
-// §3.7A 소급 적용 — 아직 전송 대기(outbox) 중인 세트는 id가 없어 PATCH 불가.
-// 큐 항목의 intent_muscle을 직접 갱신해 flush 시 새 intent로 전송되게 한다.
-// (한계: 바로 이 순간 POST가 진행 중인 항목은 이전 intent로 저장될 수 있다 — 좁은 경쟁 창)
-export function updateOutboxIntent(clientIds: string[], intent: MuscleCode | null): void {
+// §10.2 소급 적용 — 아직 전송 대기(outbox) 중인 세트는 id가 없어 PATCH 불가.
+// 큐 항목의 target을 직접 갱신해 flush 시 새 타겟으로 전송되게 한다.
+// (한계: 바로 이 순간 POST가 진행 중인 항목은 이전 타겟으로 저장될 수 있다 — 좁은 경쟁 창)
+export function updateOutboxTarget(clientIds: string[], target: TargetCode | null): void {
   const idSet = new Set(clientIds);
   const items = readOutbox();
   if (!items.some((i) => idSet.has(i.client_id))) return;
   writeOutbox(
-    items.map((i) =>
-      idSet.has(i.client_id) ? { ...i, intent_muscle: intent ?? undefined } : i,
-    ),
+    items.map((i) => (idSet.has(i.client_id) ? { ...i, target: target ?? undefined } : i)),
   );
 }
 
@@ -259,8 +335,8 @@ function postSet(item: OutboxItem): Promise<WorkoutSet> {
     is_warmup: item.is_warmup,
     new_session: item.new_session,
     note: item.note,
-    // §3.7 — undefined면 JSON.stringify가 필드 자체를 생략 (기존 큐 항목 호환)
-    intent_muscle: item.intent_muscle,
+    // undefined면 JSON.stringify가 필드 자체를 생략 → 서버가 종목 기본 타겟 (v1 큐 항목 호환)
+    target: item.target,
     session_id: item.session_id,
   };
   return api("/api/sets", { method: "POST", body: JSON.stringify(payload) });
@@ -344,7 +420,7 @@ export async function saveSet(input: SaveSetInput): Promise<WorkoutSet | null> {
     is_warmup: input.is_warmup ?? false,
     new_session: input.new_session ?? false,
     note: input.note,
-    intent_muscle: input.intent_muscle,
+    target: input.target,
     session_id: input.session_id,
     queued_at: new Date().toISOString(),
   };
@@ -425,13 +501,33 @@ export function fetchStatsPrs(): Promise<PrStats> {
 }
 
 // §3.6 계열 합산 — 같은 base_movement 종목들의 날짜별 합산 볼륨 + 최고 e1RM
-// (명부는 활성 종목만, 합산은 아카이브 종목의 과거 세트 포함)
 export function fetchFamily(baseMovement: string): Promise<FamilyStats> {
   return api(`/api/stats/family${qs({ base_movement: baseMovement })}`);
 }
 
 export function fetchStatsCalendar(months = 6): Promise<CalendarStats> {
   return api(`/api/stats/calendar${qs({ months })}`);
+}
+
+// ---------- Admin (§10.5) ----------
+
+export function fetchAdminUsers(): Promise<AdminUser[]> {
+  return api("/api/admin/users");
+}
+
+export function fetchAdminUserSessions(
+  userId: number,
+  params: SessionListParams = {},
+): Promise<SessionSummary[]> {
+  return api(`/api/admin/users/${userId}/sessions${qs({ ...params })}`);
+}
+
+export function fetchAdminUserSession(userId: number, sessionId: number): Promise<SessionDetail> {
+  return api(`/api/admin/users/${userId}/sessions/${sessionId}`);
+}
+
+export function fetchAdminUserBodyweight(userId: number): Promise<BodyWeightEntry[]> {
+  return api(`/api/admin/users/${userId}/bodyweight`);
 }
 
 // ---------- Export ----------
