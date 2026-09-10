@@ -1,4 +1,4 @@
-# install-cloudflare-tunnel.ps1 - Cloudflare Tunnel 커넥터 설치 (SETTING.MD §12, 2026-09-10 결정)
+﻿# install-cloudflare-tunnel.ps1 - Cloudflare Tunnel 커넥터 설치 (SETTING.MD §12, 2026-09-10 결정)
 # 외부 공개를 Tailscale Funnel 대신 Cloudflare Tunnel(원격 관리 터널)로 한다.
 # PC에는 설정 파일 없이 커넥터 서비스(cloudflared)만 깔리고, 호스트명·라우팅은 Cloudflare 대시보드에서 관리.
 #
