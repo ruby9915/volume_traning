@@ -90,7 +90,27 @@ frontend 빌드(`npm run build`) → `backend`에서 `uv run uvicorn ... --port 
 
 24시간 구동을 위해 시스템 절전이 꺼져 있는지 확인: `powercfg /a` 또는 설정 > 전원 (절전 모드 "안 함").
 
-## Tailscale Funnel 설정 (외부 공개, 최초 1회)
+## 외부 공개: Cloudflare Tunnel (2026-09-10 채택, SETTING.MD §12)
+
+지인이 앱 설치 없이 링크로 접속하도록 내 도메인 + Cloudflare Tunnel을 쓴다. PC에는 커넥터 서비스만 깔리고, 인바운드 포트 개방·포트포워딩은 없다.
+
+1. 도메인을 Cloudflare DNS에 등록 (무료 플랜).
+2. Cloudflare Zero Trust > Networks > Tunnels > Create a tunnel > Cloudflared > 이름 입력 → Windows 커넥터 설치 명령에서 **토큰만** 복사 → Public Hostname: `volume.<도메인>` / Service HTTP `127.0.0.1:8000`.
+3. 관리자 PowerShell:
+
+   ```powershell
+   .\scripts\install-cloudflare-tunnel.ps1 -Token "<토큰>"
+   .\scripts\install-cloudflare-tunnel.ps1 -Status      # 상태 확인
+   .\scripts\install-cloudflare-tunnel.ps1 -Uninstall   # 제거
+   ```
+
+4. 대시보드 터널 상태가 HEALTHY 이면 폰 LTE에서 `https://volume.<도메인>` 접속.
+
+- cloudflared 서비스는 부팅 시 자동 시작하며 `VolumeApp-StartServer` 작업과 독립이다.
+- 공개 URL이 되므로 가입 제한(초대코드 또는 Cloudflare Access)은 별도 결정 사항이다 (SETTING.MD §12.3).
+- 이후 NAS 구축 시 직접 노출(Caddy + 포트포워딩)로 전환 예정 — 절차는 SETTING.MD §12.4.
+
+## (예비) Tailscale — tailnet 내부 접속용
 
 1. Tailscale 설치 후 로그인 (무료 플랜이면 충분).
 2. PowerShell에서:
