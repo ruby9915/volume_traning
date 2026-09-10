@@ -11,7 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from . import auth, backup
 from .config import get_settings
 from .db import init_db
-from .routers import admin, catalog, exercises, sessions, stats
+from .routers import admin, analytics, catalog, exercises, sessions, stats
 
 logger = logging.getLogger("app")
 
@@ -61,6 +61,8 @@ app.include_router(catalog.router, dependencies=_protected)
 app.include_router(exercises.router, dependencies=_protected)
 app.include_router(sessions.router, dependencies=_protected)
 app.include_router(stats.router, dependencies=_protected)
+# §11.1 고급 분석 — require_analytics_ready(인증 + 4주 데이터 게이트)가 라우터 자체에 걸려 있다
+app.include_router(analytics.router)
 app.include_router(admin.router)  # require_admin은 라우터 자체에 걸려 있다
 
 

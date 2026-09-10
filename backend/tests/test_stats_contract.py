@@ -28,8 +28,9 @@ FREQUENCY_KEYS = {"days_this_week", "weekly_streak", "days_since_last"}
 TOTALS_KEYS = {"tonnage_kg", "session_count", "set_count", "rep_count"}
 SUMMARY_KEYS = {
     "this_week", "weekly_sparkline", "muscle_sets_this_week",
-    "recent_prs", "frequency", "totals",
+    "recent_prs", "frequency", "totals", "analytics",
 }
+ANALYTICS_GATE_KEYS = {"ready", "weeks_of_data", "required_weeks"}  # §11.1
 
 VOLUME_KEYS = {"granularity", "points"}
 VOLUME_POINT_KEYS = {"period", "total_volume", "per_muscle", "per_region"}
@@ -96,6 +97,7 @@ def _assert_summary_shape(body):
     _assert_each(body["recent_prs"], PR_EVENT_KEYS, "recent_prs")
     assert_keys(body["frequency"], FREQUENCY_KEYS, "summary.frequency")
     assert_keys(body["totals"], TOTALS_KEYS, "summary.totals")
+    assert_keys(body["analytics"], ANALYTICS_GATE_KEYS, "summary.analytics")
 
 
 def _assert_volume_shape(body):

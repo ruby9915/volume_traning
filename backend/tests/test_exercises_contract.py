@@ -8,6 +8,7 @@ from app.seed_data.exercises import EXERCISES
 
 EXERCISE_KEYS = {
     "id", "name_ko", "name_en", "base_movement", "tags", "default_target", "default_target_ko",
+    "secondary_targets", "secondary_targets_ko",  # §11.2
     "machine_id", "machine_name", "bodyweight_factor", "load_multiplier",
     "is_builtin", "is_archived", "is_own", "note", "aliases",
 }
@@ -21,6 +22,9 @@ def _assert_exercise_shape(obj, label):
     )
     assert isinstance(obj["tags"], list)
     assert isinstance(obj["default_target"], str) and obj["default_target"]
+    assert isinstance(obj["secondary_targets"], list)
+    assert len(obj["secondary_targets"]) == len(obj["secondary_targets_ko"])
+    assert obj["default_target"] not in obj["secondary_targets"]
 
 
 def test_list_contract(auth_client):

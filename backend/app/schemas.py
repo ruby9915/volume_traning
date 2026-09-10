@@ -48,6 +48,19 @@ Password = Annotated[str, StringConstraints(min_length=4, max_length=128)]
 
 MAX_TAGS = 20
 MAX_TAG_LEN = 30
+# §11.2 종목당 보조 근육 상한 — 관례상 2~3개, 여유 있게
+MAX_SECONDARY = 5
+
+
+def _clean_secondary(codes: list[str]) -> list[str]:
+    out: list[str] = []
+    for c in codes:
+        c = c.strip()
+        if c and c not in out:
+            out.append(c)
+    if len(out) > MAX_SECONDARY:
+        raise ValueError(f"보조 근육은 {MAX_SECONDARY}개 이하여야 합니다")
+    return out
 
 
 def _clean_tags(tags: list[str]) -> list[str]:
@@ -134,6 +147,8 @@ class ExerciseCreate(StrictModel):
     base_movement: AttrValue | None = None
     tags: list[str] = []
     default_target: TargetCode
+    # §11.2 보조(협응) 근육 — 간접 볼륨 후보. 기본 타겟과 같은 코드는 422
+    secondary_targets: list[TargetCode] = []
     machine_id: int | None = None
     bodyweight_factor: float = Field(default=0, ge=0, le=1)
     load_multiplier: float = Field(default=1, gt=0)
@@ -145,6 +160,11 @@ class ExerciseCreate(StrictModel):
     def tags_clean(cls, v: list[str]) -> list[str]:
         return _clean_tags(v)
 
+    @field_validator("secondary_targets")
+    @classmethod
+    def secondary_clean(cls, v: list[str]) -> list[str]:
+        return _clean_secondary(v)
+
 
 class ExerciseUpdate(StrictModel):
     name_ko: Name | None = None
@@ -152,6 +172,7 @@ class ExerciseUpdate(StrictModel):
     base_movement: AttrValue | None = None
     tags: list[str] | None = None
     default_target: TargetCode | None = None
+    secondary_targets: list[TargetCode] | None = None  # 빈 배열 = 전부 해제
     machine_id: int | None = None  # 명시적 null = 머신 해제
     bodyweight_factor: float | None = Field(default=None, ge=0, le=1)
     load_multiplier: float | None = Field(default=None, gt=0)
@@ -164,6 +185,11 @@ class ExerciseUpdate(StrictModel):
     def tags_clean(cls, v: list[str] | None) -> list[str] | None:
         return None if v is None else _clean_tags(v)
 
+    @field_validator("secondary_targets")
+    @classmethod
+    def secondary_clean(cls, v: list[str] | None) -> list[str] | None:
+        return None if v is None else _clean_secondary(v)
+
 
 class ExerciseOut(BaseModel):
     id: int
@@ -173,6 +199,8 @@ class ExerciseOut(BaseModel):
     tags: list[str]
     default_target: str
     default_target_ko: str
+    secondary_targets: list[str]  # §11.2 보조 근육 코드 (정렬: 타겟 sort_order)
+    secondary_targets_ko: list[str]
     machine_id: int | None = None
     machine_name: str | None = None
     bodyweight_factor: float
@@ -371,6 +399,14 @@ class TotalStats(BaseModel):
     rep_count: int
 
 
+class AnalyticsGate(BaseModel):
+    """§11.1 고급 분석 데이터 준비도 — 훈련 주(웜업 아닌 세트가 있는 ISO 주) 수 기준."""
+
+    ready: bool
+    weeks_of_data: int
+    required_weeks: int
+
+
 class StatsSummaryOut(BaseModel):
     this_week: ThisWeekCard
     weekly_sparkline: list[WeekVolumePoint]
@@ -378,6 +414,7 @@ class StatsSummaryOut(BaseModel):
     recent_prs: list[PrEvent]
     frequency: FrequencyStats
     totals: TotalStats
+    analytics: AnalyticsGate
 
 
 class VolumePoint(BaseModel):
@@ -468,6 +505,109 @@ class CalendarPoint(BaseModel):
 
 class StatsCalendarOut(BaseModel):
     points: list[CalendarPoint]
+
+
+# ---------- Advanced analytics (§11) ----------
+
+class MuscleWeekFrequency(BaseModel):
+    """근육(level 2) 또는 부위의 주별 세션 수 + 마지막 자극 경과일."""
+
+    code: str
+    name_ko: str
+    region: str
+    per_week: list[int]  # weeks 순서(오래된 → 이번 주)와 같은 길이
+    avg_per_week: float  # 이번 주(진행 중) 제외 평균
+    days_since_last: int | None = None  # 한 번도 없으면 null
+    neglected: bool  # 자극한 적 있고 NEGLECT_DAYS 이상 지남
+
+
+class FrequencyOut(BaseModel):
+    weeks: list[str]  # week_start (월요일) 오래된 → 이번 주
+    neglect_days: int
+    regions: list[MuscleWeekFrequency]
+    muscles: list[MuscleWeekFrequency]
+
+
+class TrendPoint(BaseModel):
+    week_start: str
+    volume_kg: float
+    set_count: int
+    ma4_kg: float | None = None  # 이번 주 포함 4주 이동평균 (첫 훈련 주부터 4주 미만이면 null)
+    acwr: float | None = None  # 이번 주 / 직전 4주 평균 (직전 4주가 없거나 0이면 null)
+    in_progress: bool
+
+
+class TrendOut(BaseModel):
+    first_week: str | None = None
+    acwr_warn: float
+    points: list[TrendPoint]
+
+
+class RepMaxCell(BaseModel):
+    reps: int
+    best_weight_kg: float | None = None  # 정확히 그 횟수로 든 최고 중량
+    best_date: str | None = None
+    implied_weight_kg: float | None = None  # 그 횟수 이상으로 든 최고 중량 (단조 감소)
+
+
+class RepPrEvent(BaseModel):
+    date: str
+    weight_kg: float
+    reps: int
+    prev_reps: int
+
+
+class RepMaxOut(BaseModel):
+    exercise_id: int
+    name_ko: str
+    cells: list[RepMaxCell]
+    rep_prs: list[RepPrEvent]  # 최신순
+
+
+class FatiguePoint(BaseModel):
+    ordinal: int  # 세션 내 그 종목의 n번째 워킹 세트
+    sessions: int  # 이 서수까지 간 세션 수
+    avg_reps: float
+    avg_weight_kg: float
+    rel_reps: float | None = None  # 1세트 대비 횟수 비율 평균 (1세트는 1.0)
+
+
+class BucketShare(BaseModel):
+    bucket: str
+    sets: int
+    share: float  # 0~1
+
+
+class FatigueOut(BaseModel):
+    exercise_id: int
+    name_ko: str
+    sessions_used: int
+    points: list[FatiguePoint]
+    rep_ranges: list[BucketShare]
+
+
+class IntensityOut(BaseModel):
+    sets_total: int  # 강도 계산 대상 세트 (weight>0, 웜업 제외, 러닝 e1RM 존재)
+    avg_intensity_pct: float | None = None
+    zones: list[BucketShare]
+    rep_ranges: list[BucketShare]  # 워킹 세트 전체(weight 0 포함)
+
+
+class AttributionPoint(BaseModel):
+    code: str
+    name_ko: str
+    region: str
+    direct_sets: int
+    indirect_sets: int  # 가중 전 세트 수
+    fractional_sets: float  # direct + weight × indirect
+    direct_volume_kg: float
+    indirect_volume_kg: float  # 가중 전
+    fractional_volume_kg: float
+
+
+class AttributionOut(BaseModel):
+    indirect_weight: float
+    points: list[AttributionPoint]
 
 
 # ---------- Admin (§10.5) ----------

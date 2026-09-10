@@ -7,6 +7,7 @@ import sqlite3
 
 from .seed_data.exercises import EXERCISES
 from .seed_data.machines import MACHINES
+from .seed_data.secondary import SECONDARY
 from .seed_data.targets import TARGETS
 
 
@@ -42,8 +43,21 @@ def target_id_by_code(conn: sqlite3.Connection, code: str) -> int | None:
     return None if row is None else row[0]
 
 
+def replace_secondary_targets(
+    conn: sqlite3.Connection, exercise_id: int, target_ids: list[int] | tuple[int, ...]
+) -> None:
+    """§11.2 종목의 보조 근육 목록 교체 (라우터·시드 공용)."""
+    conn.execute("DELETE FROM exercise_secondary_target WHERE exercise_id = ?", (exercise_id,))
+    for tid in target_ids:
+        conn.execute(
+            "INSERT OR IGNORE INTO exercise_secondary_target (exercise_id, target_id) VALUES (?, ?)",
+            (exercise_id, tid),
+        )
+
+
 def seed_exercises(conn: sqlite3.Connection) -> int:
-    """내장 종목 INSERT OR IGNORE (name_ko 기준). 반환: 새로 들어간 행 수."""
+    """내장 종목 INSERT OR IGNORE (name_ko 기준). 반환: 새로 들어간 행 수.
+    새로 들어간 행만 보조 근육(SECONDARY)도 함께 — 기존 행의 보조 근육은 앱에서 관리."""
     inserted = 0
     for name_ko, name_en, base, tags, target, bw, mult, aliases in EXERCISES:
         target_id = target_id_by_code(conn, target)
@@ -56,7 +70,16 @@ def seed_exercises(conn: sqlite3.Connection) -> int:
             " VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?)",
             (name_ko, name_en, bw, mult, base, tags_to_text(tags), aliases, target_id),
         )
-        inserted += cur.rowcount
+        if cur.rowcount:
+            inserted += 1
+            ids = []
+            for code in SECONDARY.get(name_ko, ()):
+                tid = target_id_by_code(conn, code)
+                if tid is None:
+                    raise ValueError(f"seed secondary '{name_ko}': unknown target '{code}'")
+                if tid != target_id:
+                    ids.append(tid)
+            replace_secondary_targets(conn, cur.lastrowid, ids)
     return inserted
 
 

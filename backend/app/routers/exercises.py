@@ -12,7 +12,7 @@ from ..schemas import (
     FavoritesReplace,
     LastRecordOut,
 )
-from ..seed import tags_to_text
+from ..seed import replace_secondary_targets, tags_to_text
 from .catalog import target_id_or_422
 
 router = APIRouter(prefix="/api", tags=["exercises"])
@@ -32,7 +32,38 @@ def _split_tags(text: str | None) -> list[str]:
     return [t.strip() for t in (text or "").split(",") if t.strip()]
 
 
-def _to_out(row: sqlite3.Row, user: CurrentUser) -> ExerciseOut:
+def _secondaries(db: sqlite3.Connection, exercise_ids: list[int]) -> dict[int, list[sqlite3.Row]]:
+    """§11.2 종목 id → 보조 근육 행(code, name_ko) 목록. 목록 조회는 한 번의 쿼리로."""
+    out: dict[int, list[sqlite3.Row]] = {}
+    if not exercise_ids:
+        return out
+    marks = ",".join("?" * len(exercise_ids))
+    for r in db.execute(
+        f"""
+        SELECT est.exercise_id, mg.code, mg.name_ko FROM exercise_secondary_target est
+        JOIN muscle_group mg ON mg.id = est.target_id
+        WHERE est.exercise_id IN ({marks}) ORDER BY mg.sort_order, mg.id
+        """,
+        exercise_ids,
+    ).fetchall():
+        out.setdefault(r["exercise_id"], []).append(r)
+    return out
+
+
+def _secondary_ids_or_422(
+    db: sqlite3.Connection, codes: list[str], default_target_id: int
+) -> list[int]:
+    ids: list[int] = []
+    for code in codes:
+        tid = target_id_or_422(db, code)
+        if tid == default_target_id:
+            raise HTTPException(status_code=422, detail=f"보조 근육 '{code}'는 기본 타겟과 같습니다")
+        if tid not in ids:
+            ids.append(tid)
+    return ids
+
+
+def _to_out(row: sqlite3.Row, user: CurrentUser, secondaries: list[sqlite3.Row] = ()) -> ExerciseOut:
     if row["default_target"] is None:
         # 마이그레이션이 채우지 못한 행 — 숨기지 말고 드러낸다 (§10.3)
         raise HTTPException(status_code=500, detail=f"종목 '{row['name_ko']}'에 기본 타겟이 없습니다")
@@ -44,6 +75,8 @@ def _to_out(row: sqlite3.Row, user: CurrentUser) -> ExerciseOut:
         tags=_split_tags(row["tags"]),
         default_target=row["default_target"],
         default_target_ko=row["default_target_ko"],
+        secondary_targets=[r["code"] for r in secondaries],
+        secondary_targets_ko=[r["name_ko"] for r in secondaries],
         machine_id=row["machine_id"],
         machine_name=row["machine_name"],
         bodyweight_factor=row["bodyweight_factor"],
@@ -92,7 +125,13 @@ def list_exercises(
         _EXERCISE_SQL + f" WHERE {_VISIBLE} AND (? OR e.is_archived = 0) ORDER BY e.id",
         (user.id, 1 if include_archived else 0),
     ).fetchall()
-    return [_to_out(r, user) for r in rows]
+    secondaries = _secondaries(db, [r["id"] for r in rows])
+    return [_to_out(r, user, secondaries.get(r["id"], [])) for r in rows]
+
+
+def _out_one(db: sqlite3.Connection, user: CurrentUser, exercise_id: int) -> ExerciseOut:
+    row = _get_visible_row(db, user, exercise_id)
+    return _to_out(row, user, _secondaries(db, [exercise_id]).get(exercise_id, []))
 
 
 @router.post("/exercises", status_code=201)
@@ -119,6 +158,7 @@ def create_exercise(
             )
         raise HTTPException(status_code=409, detail="같은 이름의 종목이 이미 있습니다")
     target_id = target_id_or_422(db, payload.default_target)
+    secondary_ids = _secondary_ids_or_422(db, payload.secondary_targets, target_id)
     machine_id = _machine_id_or_422(db, payload.machine_id)
     cur = db.execute(
         "INSERT INTO exercise (name_ko, name_en, bodyweight_factor, load_multiplier, note,"
@@ -130,7 +170,8 @@ def create_exercise(
             tags_to_text(payload.tags), payload.aliases, target_id, machine_id, user.id,
         ),
     )
-    return _to_out(_get_visible_row(db, user, cur.lastrowid), user)
+    replace_secondary_targets(db, cur.lastrowid, secondary_ids)
+    return _out_one(db, user, cur.lastrowid)
 
 
 @router.patch("/exercises/{exercise_id}", response_model=ExerciseOut)
@@ -157,6 +198,19 @@ def update_exercise(
         if code is None:
             raise HTTPException(status_code=422, detail="default_target는 null일 수 없습니다")
         data["default_target_id"] = target_id_or_422(db, code)
+    new_default_id = data.get("default_target_id", row["default_target_id"])
+    secondary_ids: list[int] | None = None
+    if "secondary_targets" in data:
+        codes = data.pop("secondary_targets")
+        if codes is None:
+            raise HTTPException(status_code=422, detail="secondary_targets는 null일 수 없습니다 (빈 배열로 해제)")
+        secondary_ids = _secondary_ids_or_422(db, codes, new_default_id)
+    elif "default_target_id" in data:
+        # 기본 타겟이 바뀌어 기존 보조 근육과 겹치면 그 보조 근육은 조용히 뺀다 (겹침 불변식 유지)
+        db.execute(
+            "DELETE FROM exercise_secondary_target WHERE exercise_id = ? AND target_id = ?",
+            (exercise_id, new_default_id),
+        )
     if "machine_id" in data:
         data["machine_id"] = _machine_id_or_422(db, data["machine_id"])
     if "is_archived" in data:
@@ -167,7 +221,9 @@ def update_exercise(
             f"UPDATE exercise SET {assignments} WHERE id = ?",
             (*data.values(), exercise_id),
         )
-    return _to_out(_get_visible_row(db, user, exercise_id), user)
+    if secondary_ids is not None:
+        replace_secondary_targets(db, exercise_id, secondary_ids)
+    return _out_one(db, user, exercise_id)
 
 
 @router.delete("/exercises/{exercise_id}")
@@ -198,7 +254,7 @@ def restore_exercise(
     row = _get_visible_row(db, user, exercise_id)
     _require_editable(row, user)
     db.execute("UPDATE exercise SET is_archived = 0 WHERE id = ?", (exercise_id,))
-    return _to_out(_get_visible_row(db, user, exercise_id), user)
+    return _out_one(db, user, exercise_id)
 
 
 @router.get("/exercises/{exercise_id}/last-record", response_model=LastRecordOut)

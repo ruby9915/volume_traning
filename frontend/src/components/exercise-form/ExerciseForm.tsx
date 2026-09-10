@@ -12,16 +12,20 @@ export interface ExerciseFormValues {
   base_movement: string;
   tags: string[];
   default_target: TargetCode | null;
+  secondary_targets: TargetCode[]; // §11.2 보조 근육 (간접 볼륨 후보)
   machine_id: number | null;
   bodyweight_factor: string;
   load_multiplier: string;
 }
+
+export const MAX_SECONDARY = 5;
 
 export const EMPTY_FORM: ExerciseFormValues = {
   name_ko: "",
   base_movement: "",
   tags: [],
   default_target: null,
+  secondary_targets: [],
   machine_id: null,
   bodyweight_factor: "0",
   load_multiplier: "1",
@@ -33,6 +37,7 @@ export function formFromExercise(ex: Exercise): ExerciseFormValues {
     base_movement: ex.base_movement ?? "",
     tags: ex.tags,
     default_target: ex.default_target,
+    secondary_targets: ex.secondary_targets,
     machine_id: ex.machine_id,
     bodyweight_factor: String(ex.bodyweight_factor),
     load_multiplier: String(ex.load_multiplier),
@@ -50,11 +55,14 @@ export function validateForm(v: ExerciseFormValues): ExerciseCreateRequest | str
   if (!Number.isFinite(lm) || lm <= 0) return "중량 배수는 0보다 큰 숫자여야 합니다";
   if (v.tags.length > 20) return "태그는 20개 이하로 입력하세요";
   if (v.tags.some((t) => t.length > 30)) return "태그는 30자 이하로 입력하세요";
+  const secondary = v.secondary_targets.filter((c) => c !== v.default_target);
+  if (secondary.length > MAX_SECONDARY) return `보조 근육은 ${MAX_SECONDARY}개 이하로 선택하세요`;
   return {
     name_ko: name,
     base_movement: v.base_movement.trim() || null,
     tags: v.tags,
     default_target: v.default_target,
+    secondary_targets: secondary,
     machine_id: v.machine_id,
     bodyweight_factor: bw,
     load_multiplier: lm,
@@ -196,8 +204,9 @@ export default function ExerciseForm({
   advancedOpen: boolean;
   onToggleAdvanced: () => void;
 }) {
-  const { nameOf } = useTargets();
+  const { nameOf, muscleOf } = useTargets();
   const [targetOpen, setTargetOpen] = useState(false);
+  const [secondaryOpen, setSecondaryOpen] = useState(false);
   const baseOptions = useMemo(() => distinctBaseMovements(exercises), [exercises]);
   const tagOptions = useMemo(() => distinctTags(exercises), [exercises]);
   const set = (patch: Partial<ExerciseFormValues>) => onChange({ ...values, ...patch });
@@ -228,6 +237,35 @@ export default function ExerciseForm({
             {values.default_target ? nameOf(values.default_target) : "타겟 선택"}
           </button>
         </div>
+      </div>
+
+      <div>
+        <span className="text-sm text-muted">보조 근육 (선택 — 고급 분석의 간접 볼륨에만 사용)</span>
+        <div className="mt-1.5 flex flex-wrap gap-1.5">
+          {values.secondary_targets.map((code) => (
+            <button
+              key={code}
+              type="button"
+              onClick={() => set({ secondary_targets: values.secondary_targets.filter((c) => c !== code) })}
+              className="rounded-full border border-line bg-well px-3 py-1.5 text-xs text-secondary"
+              aria-label={`${nameOf(code)} 제거`}
+            >
+              {nameOf(code)} ×
+            </button>
+          ))}
+          {values.secondary_targets.length < MAX_SECONDARY ? (
+            <button
+              type="button"
+              onClick={() => setSecondaryOpen(true)}
+              className="rounded-full border border-dashed border-line-dashed px-3 py-1.5 text-xs text-muted"
+            >
+              + 추가
+            </button>
+          ) : null}
+        </div>
+        <span className="mt-1 block text-xs text-muted">
+          기본 타겟과 같은 근육은 넣을 수 없습니다. 총볼륨·PR에는 영향이 없습니다.
+        </span>
       </div>
 
       <SuggestInput
@@ -292,8 +330,24 @@ export default function ExerciseForm({
         description="이 종목을 기록할 때 기본으로 선택될 부위입니다. 기록 중에 세트마다 바꿀 수 있습니다."
         onClose={() => setTargetOpen(false)}
         onSelect={(code) => {
-          set({ default_target: code });
+          // 기본 타겟이 바뀌어 보조 근육과 같은 근육이 되면 그 보조 근육은 뺀다 (서버 불변식과 동일)
+          set({
+            default_target: code,
+            secondary_targets: values.secondary_targets.filter((c) => muscleOf(c) !== muscleOf(code)),
+          });
           setTargetOpen(false);
+        }}
+      />
+      <TargetSheet
+        open={secondaryOpen}
+        value={null}
+        description="이 종목이 간접적으로 쓰는 근육입니다. 고급 분석의 '관여 근육 분배'에서 간접 세트(기본 0.5)로만 집계됩니다."
+        onClose={() => setSecondaryOpen(false)}
+        onSelect={(code) => {
+          setSecondaryOpen(false);
+          if (values.default_target && muscleOf(code) === muscleOf(values.default_target)) return;
+          if (values.secondary_targets.includes(code)) return;
+          set({ secondary_targets: [...values.secondary_targets, code] });
         }}
       />
     </div>

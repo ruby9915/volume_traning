@@ -83,6 +83,9 @@ export interface Exercise {
   tags: string[]; // 장비·자세·그립·각도 등 자유 태그 (이름과 무관)
   default_target: TargetCode; // 기본 타겟 — 세트 저장 시 미지정이면 이 값
   default_target_ko: string;
+  // §11.2 보조(협응) 근육 — 간접 볼륨 후보. 기본 타겟과 같은 근육은 없다
+  secondary_targets: TargetCode[];
+  secondary_targets_ko: string[];
   machine_id: number | null;
   machine_name: string | null;
   bodyweight_factor: number;
@@ -100,6 +103,7 @@ export interface ExerciseCreateRequest {
   base_movement?: string | null;
   tags?: string[];
   default_target: TargetCode;
+  secondary_targets?: TargetCode[]; // ≤5, 기본 타겟과 같으면 422
   machine_id?: number | null;
   bodyweight_factor?: number;
   load_multiplier?: number;
@@ -321,6 +325,128 @@ export interface StatsSummary {
     set_count: number;
     rep_count: number;
   };
+  analytics: AnalyticsGate; // §11.1 고급 분석 준비도
+}
+
+// ---------- Advanced analytics (§11) ----------
+
+/** 훈련 주(웜업 아닌 세트가 있는 ISO 주) 수 기준 게이트. ready=false면 고급 엔드포인트는 403 */
+export interface AnalyticsGate {
+  ready: boolean;
+  weeks_of_data: number;
+  required_weeks: number;
+}
+
+/** 고급 분석 403 detail — 프론트는 잠금 카드로 바꿔 보여 준다 */
+export interface InsufficientDataDetail {
+  code: "insufficient_data";
+  weeks_of_data: number;
+  required_weeks: number;
+}
+
+export interface MuscleWeekFrequency {
+  code: TargetCode | Region;
+  name_ko: string;
+  region: Region;
+  per_week: number[]; // weeks 순서(오래된 → 이번 주)와 같은 길이 — 그 부위를 자극한 세션 수
+  avg_per_week: number; // 이번 주(진행 중) 제외 평균
+  days_since_last: number | null; // 한 번도 없으면 null
+  neglected: boolean; // 자극한 적 있고 neglect_days 이상 지남
+}
+
+// GET /api/stats/advanced/frequency?weeks=
+export interface AdvancedFrequency {
+  weeks: string[]; // week_start 오래된 → 이번 주
+  neglect_days: number;
+  regions: MuscleWeekFrequency[];
+  muscles: MuscleWeekFrequency[]; // 근육(level 2)
+}
+
+export interface TrendPoint {
+  week_start: string;
+  volume_kg: number;
+  set_count: number;
+  ma4_kg: number | null; // 이번 주 포함 4주 이동평균 (첫 훈련 주부터 4주 미만이면 null)
+  acwr: number | null; // 이번 주 / 직전 4주 평균 (직전 4주가 없거나 0이면 null)
+  in_progress: boolean;
+}
+
+// GET /api/stats/advanced/trend?weeks=
+export interface TrendStats {
+  first_week: string | null;
+  acwr_warn: number; // 이 값 초과 = 급증 경고 (완료 주만 판정)
+  points: TrendPoint[];
+}
+
+export interface RepMaxCell {
+  reps: number;
+  best_weight_kg: number | null; // 정확히 그 횟수로 든 최고 중량
+  best_date: string | null;
+  implied_weight_kg: number | null; // 그 횟수 이상으로 든 최고 중량 (단조 감소)
+}
+
+export interface RepPrEvent {
+  date: string;
+  weight_kg: number;
+  reps: number;
+  prev_reps: number;
+}
+
+// GET /api/stats/advanced/rep-max?exercise_id=
+export interface RepMaxStats {
+  exercise_id: number;
+  name_ko: string;
+  cells: RepMaxCell[]; // reps 1..12
+  rep_prs: RepPrEvent[]; // 최신순, 최대 20
+}
+
+export interface FatiguePoint {
+  ordinal: number; // 세션 내 그 종목의 n번째 워킹 세트
+  sessions: number;
+  avg_reps: number;
+  avg_weight_kg: number;
+  rel_reps: number | null; // 1세트 대비 횟수 비율 평균
+}
+
+export interface BucketShare {
+  bucket: string;
+  sets: number;
+  share: number; // 0~1
+}
+
+// GET /api/stats/advanced/fatigue?exercise_id=&from=&to=
+export interface FatigueStats {
+  exercise_id: number;
+  name_ko: string;
+  sessions_used: number;
+  points: FatiguePoint[];
+  rep_ranges: BucketShare[]; // 1-5 · 6-12 · 13-20 · 21+
+}
+
+// GET /api/stats/advanced/intensity?exercise_id?&from=&to=
+export interface IntensityStats {
+  sets_total: number; // 강도 계산 대상 세트 (weight>0, 웜업 제외, 러닝 e1RM 존재)
+  avg_intensity_pct: number | null;
+  zones: BucketShare[]; // <60% · 60-70% · 70-80% · 80-90% · 90%+
+  rep_ranges: BucketShare[];
+}
+
+export interface AttributionPoint {
+  code: TargetCode; // 근육(level 2)
+  name_ko: string;
+  region: Region;
+  direct_sets: number; // = /stats/muscles level 2 set_count
+  indirect_sets: number; // 가중 전
+  fractional_sets: number; // direct + weight × indirect
+  direct_volume_kg: number;
+  indirect_volume_kg: number; // 가중 전
+  fractional_volume_kg: number;
+}
+
+// GET /api/stats/advanced/attribution?from=&to=&include_warmup=&indirect_weight=
+export interface AttributionStats {
+  indirect_weight: number;
+  points: AttributionPoint[];
 }
 
 export type VolumeGranularity = "day" | "week" | "month";

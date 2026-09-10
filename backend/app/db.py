@@ -6,6 +6,7 @@ from pathlib import Path
 from .config import get_settings
 from .seed import seed, tags_to_text
 from .seed_data.exercises import EXERCISES
+from .seed_data.secondary import SECONDARY
 
 logger = logging.getLogger("app.db")
 
@@ -56,6 +57,37 @@ SELECT
     CASE WHEN t.level = 3 THEN t.code END AS detail_code
 FROM muscle_group t
 LEFT JOIN muscle_group p ON p.id = t.parent_id;
+"""
+
+# §11.2 간접(협응근) 귀속 — 보조 데이터 전용. 세트 하나가 "간접 후보" 근육마다 한 행:
+#   후보 = 종목의 보조 근육(exercise_secondary_target) ∪ 종목 기본 타겟
+#   단, 세트 타겟과 같은 근육(level 2)이면 제외 → 한 세트가 같은 근육에 직접+간접으로 겹치지 않는다.
+# 근육 단위로 DISTINCT — 세부 2개가 같은 근육이어도 한 번만. 가중치(0.5)는 조회 시 곱한다.
+# 총볼륨·PR·set_volume에는 절대 섞이지 않는다 (직접 귀속이 정본, §10.2).
+SET_INDIRECT_VIEW = """
+CREATE VIEW IF NOT EXISTS set_indirect AS
+SELECT DISTINCT
+    sv.set_id       AS set_id,
+    sv.session_id   AS session_id,
+    sv.user_id      AS user_id,
+    sv.date         AS date,
+    sv.exercise_id  AS exercise_id,
+    sv.is_warmup    AS is_warmup,
+    sv.weight_kg    AS weight_kg,
+    sv.reps         AS reps,
+    sv.volume_kg    AS volume_kg,
+    ip.muscle_code  AS muscle_code,
+    ip.region       AS region
+FROM set_volume sv
+JOIN target_path st ON st.id = sv.target_id
+JOIN (
+    SELECT exercise_id, target_id FROM exercise_secondary_target
+    UNION
+    SELECT id AS exercise_id, default_target_id AS target_id FROM exercise
+    WHERE default_target_id IS NOT NULL
+) cand ON cand.exercise_id = sv.exercise_id
+JOIN target_path ip ON ip.id = cand.target_id
+WHERE ip.muscle_code != st.muscle_code;
 """
 
 DDL = """
@@ -118,6 +150,13 @@ CREATE TABLE IF NOT EXISTS favorite (
     PRIMARY KEY (user_id, exercise_id)
 );
 
+-- §11.2 종목의 보조(협응) 근육 — 간접 볼륨 후보. 기본 타겟은 여기 넣지 않는다 (VIEW가 합친다)
+CREATE TABLE IF NOT EXISTS exercise_secondary_target (
+    exercise_id INTEGER NOT NULL REFERENCES exercise(id) ON DELETE CASCADE,
+    target_id   INTEGER NOT NULL REFERENCES muscle_group(id),
+    PRIMARY KEY (exercise_id, target_id)
+);
+
 CREATE TABLE IF NOT EXISTS workout_session (
     id         INTEGER PRIMARY KEY,
     user_id    INTEGER REFERENCES user(id),
@@ -154,7 +193,7 @@ CREATE TABLE IF NOT EXISTS body_weight_log (
 );
 """
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 # v1 → v2 (§3.6): 당시 추가된 속성 6컬럼. v4에서 4개는 tags로 흡수·삭제된다.
 _V2_ATTR_COLUMNS = ("base_movement", "equipment", "support", "grip", "angle", "aliases")
@@ -186,8 +225,9 @@ def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
     )
 
 
-def _migrate_structure(conn: sqlite3.Connection) -> bool:
-    """PRAGMA user_version 기반 구조 마이그레이션. 반환: v4 데이터 단계가 필요한지.
+def _migrate_structure(conn: sqlite3.Connection) -> int:
+    """PRAGMA user_version 기반 구조 마이그레이션. 반환: 시작 시점 버전
+    (init_db가 이 값으로 어느 데이터 단계를 돌릴지 정한다. 최신이면 SCHEMA_VERSION).
 
     - 각 블록은 컬럼 존재 확인 기반 멱등 — 반쯤 적용된 상태에서 재기동해도 안전.
     - 버전 기록은 init_db 끝에서 한 번 (v4 데이터 단계까지 끝난 뒤). 미래 버전 DB를
@@ -200,10 +240,12 @@ def _migrate_structure(conn: sqlite3.Connection) -> bool:
       exercise(user_id·default_target_id·tags·machine_id, 속성 4컬럼 → tags 후 DROP),
       workout_set.intent_muscle_group_id → target_id RENAME,
       workout_session.user_id, body_weight_log 재구축(UNIQUE(user_id, date)).
+    v4→v5 (§11.2): exercise_secondary_target 테이블(DDL) + set_indirect VIEW. 구조 변경 없음 —
+      데이터 단계(_apply_v5_data)가 내장 종목의 보조 근육을 시드로 채운다.
     """
     version = conn.execute("PRAGMA user_version").fetchone()[0]
     if version >= SCHEMA_VERSION:
-        return False
+        return version
 
     if version < 2 and "base_movement" not in _columns(conn, "exercise"):
         # 진짜 v1 테이블만 (신규 DB는 DDL이 이미 v4 형태라 건너뛴다)
@@ -221,6 +263,7 @@ def _migrate_structure(conn: sqlite3.Connection) -> bool:
     # 구버전 VIEW는 삭제된 컬럼을 참조하므로 구조 변경 전에 내린다 (_ensure_views가 재생성)
     conn.execute("DROP VIEW IF EXISTS set_volume")
     conn.execute("DROP VIEW IF EXISTS target_path")
+    conn.execute("DROP VIEW IF EXISTS set_indirect")
 
     mg = _columns(conn, "muscle_group")
     if "level" not in mg:
@@ -288,14 +331,16 @@ def _migrate_structure(conn: sqlite3.Connection) -> bool:
         )
         conn.execute("DROP TABLE body_weight_log")
         conn.execute("ALTER TABLE body_weight_log_v4 RENAME TO body_weight_log")
-    return True
+    return version
 
 
 def _ensure_views(conn: sqlite3.Connection) -> None:
     conn.execute("DROP VIEW IF EXISTS set_volume")
     conn.execute("DROP VIEW IF EXISTS target_path")
+    conn.execute("DROP VIEW IF EXISTS set_indirect")
     conn.execute(SET_VOLUME_VIEW)
     conn.execute(TARGET_PATH_VIEW)
+    conn.execute(SET_INDIRECT_VIEW)
     # v4 컬럼(user_id)에 걸리는 인덱스는 마이그레이션 뒤에만 만들 수 있다 (DDL 단계엔 컬럼이 없을 수 있음)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_session_user ON workout_session(user_id, date)")
 
@@ -438,18 +483,47 @@ def _apply_v4_data(conn: sqlite3.Connection) -> list[str]:
     return log
 
 
+def _apply_v5_data(conn: sqlite3.Connection) -> list[str]:
+    """v5 데이터 단계 (§11.2): 보조 근육이 하나도 없는 내장 종목에 시드 초안을 채운다.
+
+    한 번만 — 이후 관리자가 앱에서 고친 값(비우기 포함)을 재기동이 덮어쓰지 않는다.
+    새로 추가되는 내장 종목은 seed_exercises가 INSERT 시점에 함께 넣는다.
+    """
+    filled = 0
+    for r in conn.execute(
+        """
+        SELECT e.id, e.name_ko, e.default_target_id FROM exercise e
+        WHERE e.is_builtin = 1
+          AND NOT EXISTS (SELECT 1 FROM exercise_secondary_target t WHERE t.exercise_id = e.id)
+        """
+    ).fetchall():
+        codes = SECONDARY.get(r["name_ko"], ())
+        for code in codes:
+            conn.execute(
+                "INSERT OR IGNORE INTO exercise_secondary_target (exercise_id, target_id)"
+                " SELECT ?, id FROM muscle_group WHERE code = ? AND id != ?",
+                (r["id"], code, r["default_target_id"]),
+            )
+        if codes:
+            filled += 1
+    return [f"secondary targets seeded: {filled} exercises"] if filled else []
+
+
 def init_db(db_path: str | None = None) -> list[str]:
     """스키마 생성·마이그레이션·시드. 반환: 마이그레이션 로그 (테스트·기동 로그용)."""
     conn = _connect(db_path or get_settings().DB_PATH)
     try:
         conn.execute("PRAGMA journal_mode = WAL")
         conn.executescript(DDL)
-        need_v4_data = _migrate_structure(conn)
+        from_version = _migrate_structure(conn)
         _ensure_views(conn)
         seed(conn)
         log: list[str] = []
-        if need_v4_data:
-            log = _apply_v4_data(conn)
+        if from_version < 4:
+            log += _apply_v4_data(conn)
+        if from_version < 5:
+            log += _apply_v5_data(conn)
+        if from_version < SCHEMA_VERSION:
             conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         conn.commit()
         for line in log:

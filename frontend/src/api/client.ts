@@ -2,7 +2,9 @@
 
 import type {
   AdminUser,
+  AdvancedFrequency,
   ArchivedConflictDetail,
+  AttributionStats,
   BodyWeightCreateRequest,
   BodyWeightEntry,
   CalendarStats,
@@ -12,7 +14,10 @@ import type {
   ExerciseStats,
   ExerciseUpdateRequest,
   FamilyStats,
+  FatigueStats,
   Favorites,
+  InsufficientDataDetail,
+  IntensityStats,
   LastRecord,
   LoginResponse,
   Machine,
@@ -23,6 +28,7 @@ import type {
   PrStats,
   RangeParams,
   RegisterRequest,
+  RepMaxStats,
   SaveSetInput,
   SessionDetail,
   SessionListParams,
@@ -33,6 +39,7 @@ import type {
   StatsSummary,
   Target,
   TargetCode,
+  TrendStats,
   User,
   VolumeStats,
   VolumeStatsParams,
@@ -73,6 +80,20 @@ export function archivedConflictOf(e: unknown): ArchivedConflictDetail | null {
     (e.detail as { code?: unknown }).code === "archived_exists"
   ) {
     return e.detail as ArchivedConflictDetail;
+  }
+  return null;
+}
+
+/** 고급 분석 403(detail.code="insufficient_data")이면 detail, 아니면 null (§11.1) */
+export function insufficientDataOf(e: unknown): InsufficientDataDetail | null {
+  if (
+    e instanceof ApiError &&
+    e.status === 403 &&
+    e.detail !== null &&
+    typeof e.detail === "object" &&
+    (e.detail as { code?: unknown }).code === "insufficient_data"
+  ) {
+    return e.detail as InsufficientDataDetail;
   }
   return null;
 }
@@ -507,6 +528,36 @@ export function fetchFamily(baseMovement: string): Promise<FamilyStats> {
 
 export function fetchStatsCalendar(months = 6): Promise<CalendarStats> {
   return api(`/api/stats/calendar${qs({ months })}`);
+}
+
+// ---------- Advanced analytics (§11) — 4주 미만이면 403 insufficient_data ----------
+
+export function fetchAdvancedFrequency(weeks = 8): Promise<AdvancedFrequency> {
+  return api(`/api/stats/advanced/frequency${qs({ weeks })}`);
+}
+
+export function fetchAdvancedTrend(weeks = 16): Promise<TrendStats> {
+  return api(`/api/stats/advanced/trend${qs({ weeks })}`);
+}
+
+export function fetchRepMax(exerciseId: number): Promise<RepMaxStats> {
+  return api(`/api/stats/advanced/rep-max${qs({ exercise_id: exerciseId })}`);
+}
+
+export function fetchFatigue(exerciseId: number, params: { from?: string; to?: string } = {}): Promise<FatigueStats> {
+  return api(`/api/stats/advanced/fatigue${qs({ exercise_id: exerciseId, ...params })}`);
+}
+
+export function fetchIntensity(
+  params: { exercise_id?: number; from?: string; to?: string } = {},
+): Promise<IntensityStats> {
+  return api(`/api/stats/advanced/intensity${qs({ ...params })}`);
+}
+
+export function fetchAttribution(
+  params: RangeParams & { indirect_weight?: number } = {},
+): Promise<AttributionStats> {
+  return api(`/api/stats/advanced/attribution${qs({ ...params })}`);
 }
 
 // ---------- Admin (§10.5) ----------

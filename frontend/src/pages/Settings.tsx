@@ -15,9 +15,11 @@ import Card from "../components/Card";
 import Spinner from "../components/Spinner";
 import { useMe } from "../hooks/useMe";
 import {
+  INDIRECT_WEIGHT_OPTIONS,
   REST_TARGET_OPTIONS,
   TARGET_BACKFILL_OPTIONS,
   useAppStore,
+  type IndirectWeight,
   type TargetBackfillMode,
   type WeightStep,
 } from "../store";
@@ -148,6 +150,33 @@ function TargetBackfillSection() {
       <p className="mt-2 text-xs text-muted">
         기록 화면에서 종목 카드의 타겟 부위를 바꿀 때, 이미 저장된 같은 종목 세트에도 적용할지 처리
         방식입니다.
+      </p>
+    </Card>
+  );
+}
+
+const INDIRECT_WEIGHT_LABELS: Record<IndirectWeight, string> = {
+  0.33: "⅓ (0.33)",
+  0.5: "½ (0.5)",
+};
+
+// §11.2 간접 세트 가중치 — 고급 분석 '관여 근육 분배'에서만 쓰인다 (총볼륨·PR 무관)
+function IndirectWeightSection() {
+  const weight = useAppStore((s) => s.indirectWeight);
+  const setWeight = useAppStore((s) => s.setIndirectWeight);
+  return (
+    <Card>
+      <SectionTitle>간접 세트 가중치</SectionTitle>
+      <div className="grid grid-cols-2 gap-2">
+        {INDIRECT_WEIGHT_OPTIONS.map((w) => (
+          <ChoiceButton key={w} active={weight === w} onClick={() => setWeight(w)}>
+            {INDIRECT_WEIGHT_LABELS[w]}
+          </ChoiceButton>
+        ))}
+      </div>
+      <p className="mt-2 text-xs text-muted">
+        고급 분석의 &lsquo;관여 근육 분배&rsquo;에서 보조 근육이 받는 세트 가중치입니다. 메인 볼륨·PR은
+        항상 타겟 부위 100%로 계산되며 이 값의 영향을 받지 않습니다.
       </p>
     </Card>
   );
@@ -396,6 +425,7 @@ export default function Settings() {
         <WeightStepSection />
         <RestTargetSection />
         <TargetBackfillSection />
+        <IndirectWeightSection />
         <BodyweightSection />
         <ExportSection isAdmin={me.data?.is_admin ?? false} />
         <Card>

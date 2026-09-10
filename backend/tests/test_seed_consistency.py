@@ -6,6 +6,7 @@
 
 from app.seed_data.exercises import EXERCISES
 from app.seed_data.machines import MACHINES
+from app.seed_data.secondary import SECONDARY
 from app.seed_data.targets import REGION_NAMES_KO, REGIONS, TARGET_CODES, TARGETS
 
 # v1 내장 45종 — 실사용 DB에 이미 있어 이름이 바뀌면 시드가 중복 행을 만든다
@@ -51,6 +52,21 @@ def test_exercise_library_is_consistent():
         assert aliases is None or (aliases.strip() and len(aliases) <= 200), name_ko
     missing = [n for n in LEGACY_45 if n not in names]
     assert not missing, f"v1 내장 종목 누락: {missing}"
+
+
+def test_secondary_targets_are_consistent():
+    """§11.2 보조 근육 초안: 라이브러리 전 종목에 항목, 코드 유효, 기본 타겟(및 같은 근육) 제외, ≤3."""
+    parent = {t[0]: (t[4] or t[0]) for t in TARGETS}
+    names = {e[0] for e in EXERCISES}
+    assert set(SECONDARY) == names, f"불일치: {set(SECONDARY) ^ names}"
+    for name_ko, *_rest in EXERCISES:
+        target = _rest[3]
+        codes = SECONDARY[name_ko]
+        assert isinstance(codes, tuple) and len(codes) <= 3, name_ko
+        assert len(codes) == len(set(codes)), f"{name_ko}: 중복"
+        for c in codes:
+            assert c in TARGET_CODES, f"{name_ko}: unknown secondary {c}"
+            assert parent[c] != parent[target], f"{name_ko}: 보조 {c}가 기본 타겟 {target}과 같은 근육"
 
 
 def test_machine_catalog_is_consistent():

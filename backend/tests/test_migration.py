@@ -267,6 +267,76 @@ def test_migrate_v3_to_v4_full(tmp_path, env):
         conn.close()
 
 
+def test_migrate_v3_fills_builtin_secondary_targets(tmp_path, env):
+    """v3 → v5: 승격·병합된 내장 종목까지 보조 근육 초안이 채워진다 (§11.2)."""
+    path = str(tmp_path / "v3.db")
+    _make_v3_db(path)
+    log = init_db(path)
+    assert any(line.startswith("secondary targets seeded") for line in log), log
+    conn = _connect(path)
+    try:
+        codes = {
+            r[0]
+            for r in conn.execute(
+                """
+                SELECT mg.code FROM exercise_secondary_target est
+                JOIN exercise e ON e.id = est.exercise_id
+                JOIN muscle_group mg ON mg.id = est.target_id
+                WHERE e.name_ko = '벤치프레스'
+                """
+            ).fetchall()
+        }
+        assert codes == {"triceps", "front_delt"}
+        # 승격된 커스텀('푸쉬업' → 내장 '푸시업')도 라이브러리 초안을 받는다
+        n = conn.execute(
+            "SELECT COUNT(*) FROM exercise_secondary_target est JOIN exercise e ON e.id = est.exercise_id"
+            " WHERE e.name_ko = '푸시업'"
+        ).fetchone()[0]
+        assert n >= 1
+        assert conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'set_indirect'").fetchone()
+    finally:
+        conn.close()
+
+
+def test_migrate_v4_to_v5_fills_once_and_respects_edits(tmp_path, env):
+    """v4 DB(보조 근육 테이블 없음)를 열면 한 번 채우고, 이후 관리자가 비운 값은 재기동이 되살리지 않는다."""
+    path = str(tmp_path / "v4.db")
+    init_db(path)
+    conn = _connect(path)
+    try:
+        conn.execute("DROP TABLE exercise_secondary_target")
+        conn.execute("DROP VIEW IF EXISTS set_indirect")
+        conn.execute("PRAGMA user_version = 4")
+        conn.commit()
+    finally:
+        conn.close()
+
+    log = init_db(path)
+    assert any(line.startswith("secondary targets seeded") for line in log), log
+    conn = _connect(path)
+    try:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+        bench = conn.execute("SELECT id FROM exercise WHERE name_ko = '벤치프레스'").fetchone()[0]
+        assert conn.execute(
+            "SELECT COUNT(*) FROM exercise_secondary_target WHERE exercise_id = ?", (bench,)
+        ).fetchone()[0] == 2
+        # 관리자가 앱에서 비운 상태를 흉내
+        conn.execute("DELETE FROM exercise_secondary_target WHERE exercise_id = ?", (bench,))
+        conn.commit()
+    finally:
+        conn.close()
+
+    log = init_db(path)  # 재기동
+    assert not any(line.startswith("secondary targets seeded") for line in log), log
+    conn = _connect(path)
+    try:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM exercise_secondary_target WHERE exercise_id = ?", (bench,)
+        ).fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
 def test_migration_idempotent_on_restart(tmp_path, env):
     path = str(tmp_path / "v3.db")
     _make_v3_db(path)

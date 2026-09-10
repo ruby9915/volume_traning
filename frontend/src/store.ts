@@ -13,6 +13,10 @@ export const REST_TARGET_OPTIONS: RestTarget[] = [60, 90, 120, 180, 240];
 export type TargetBackfillMode = "ask" | "always" | "never";
 export const TARGET_BACKFILL_OPTIONS: TargetBackfillMode[] = ["ask", "always", "never"];
 
+// §11.2 간접(보조 근육) 세트 가중치 — fractional 방식의 0.5(기본) 또는 ⅓
+export type IndirectWeight = 0.33 | 0.5;
+export const INDIRECT_WEIGHT_OPTIONS: IndirectWeight[] = [0.33, 0.5];
+
 export interface StepperInput {
   weight_kg: number;
   reps: number;
@@ -36,6 +40,7 @@ interface AppState {
   restTargetSeconds: RestTarget; // 설정: 휴식 목표시간 (persist) — Log 진행바의 분모
   // 설정: 타겟 변경 시 기존 세트 — 물어보기(기본)/항상 적용/적용 안 함 (persist)
   targetBackfill: TargetBackfillMode;
+  indirectWeight: IndirectWeight; // 설정: 간접 세트 가중치 (persist) — 고급 분석 '관여 근육 분배'
   setActiveExercise: (id: number | null) => void;
   setStepper: (patch: Partial<StepperInput>) => void;
   setTarget: (exerciseId: number, code: TargetCode | null) => void;
@@ -45,6 +50,7 @@ interface AppState {
   setWeightStep: (step: WeightStep) => void;
   setRestTarget: (seconds: RestTarget) => void;
   setTargetBackfill: (mode: TargetBackfillMode) => void;
+  setIndirectWeight: (w: IndirectWeight) => void;
   endSession: () => void; // '세션 완료' — 클라이언트 활성 상태 초기화 (서버 상태 아님, §5.3)
 }
 
@@ -59,6 +65,7 @@ export const useAppStore = create<AppState>()(
       weightStep: 2.5,
       restTargetSeconds: 120,
       targetBackfill: "ask",
+      indirectWeight: 0.5,
       setActiveExercise: (id) => set({ activeExerciseId: id }),
       setStepper: (patch) => set((s) => ({ stepper: { ...s.stepper, ...patch } })),
       setTarget: (exerciseId, code) =>
@@ -74,6 +81,7 @@ export const useAppStore = create<AppState>()(
       setWeightStep: (step) => set({ weightStep: step }),
       setRestTarget: (seconds) => set({ restTargetSeconds: seconds }),
       setTargetBackfill: (mode) => set({ targetBackfill: mode }),
+      setIndirectWeight: (w) => set({ indirectWeight: w }),
       endSession: () =>
         set({
           activeExerciseId: null,
@@ -98,6 +106,7 @@ export const useAppStore = create<AppState>()(
         weightStep: s.weightStep,
         restTargetSeconds: s.restTargetSeconds,
         targetBackfill: s.targetBackfill,
+        indirectWeight: s.indirectWeight,
       }),
     },
   ),

@@ -15,6 +15,7 @@ from ..auth import CurrentUser, require_admin, require_auth
 from ..db import E1RM_EXPR, get_db
 from ..schemas import (
     DATE_PATTERN,
+    AnalyticsGate,
     CalendarPoint,
     ExercisePoint,
     ExercisePrRow,
@@ -50,6 +51,10 @@ WEEK_EXPR = (
 # 타겟 → 근육(level 2) → 부위(region) 경로를 준다. 별칭 sv 유지 — _filters·WEEK_EXPR 호환.
 TARGET_JOIN = "set_volume sv JOIN target_path tp ON tp.id = sv.target_id"
 
+# §11.1 고급 분석 데이터 준비도 게이트 — 훈련 주(웜업 아닌 세트가 있는 ISO 주)가 이 수 이상이어야 열린다.
+# 달력 경과가 아니라 실제 기록된 주. 4주 이동평균이 성립하는 최소 길이와 같다.
+ADVANCED_MIN_WEEKS = 4
+
 
 def _effective_today() -> date:
     # 하루 경계 03:00 (§5.3·§6.1)
@@ -57,18 +62,34 @@ def _effective_today() -> date:
 
 
 def _filters(
-    user_id: int, from_: str | None, to: str | None, include_warmup: bool
+    user_id: int, from_: str | None, to: str | None, include_warmup: bool, alias: str = "sv"
 ) -> tuple[str, list]:
-    clauses, params = ["sv.user_id = ?"], [user_id]
+    clauses, params = [f"{alias}.user_id = ?"], [user_id]
     if not include_warmup:
-        clauses.append("sv.is_warmup = 0")
+        clauses.append(f"{alias}.is_warmup = 0")
     if from_:
-        clauses.append("sv.date >= ?")
+        clauses.append(f"{alias}.date >= ?")
         params.append(from_)
     if to:
-        clauses.append("sv.date <= ?")
+        clauses.append(f"{alias}.date <= ?")
         params.append(to)
     return " AND ".join(clauses), params
+
+
+def training_weeks(db: sqlite3.Connection, user_id: int) -> int:
+    """사용자의 훈련 주 수 — 웜업 아닌 세트가 하나라도 있는 ISO 주(월요일 시작)의 개수."""
+    return db.execute(
+        f"SELECT COUNT(DISTINCT {WEEK_EXPR}) FROM set_volume sv"
+        " WHERE sv.user_id = ? AND sv.is_warmup = 0",
+        (user_id,),
+    ).fetchone()[0]
+
+
+def analytics_gate(db: sqlite3.Connection, user_id: int) -> AnalyticsGate:
+    weeks = training_weeks(db, user_id)
+    return AnalyticsGate(
+        ready=weeks >= ADVANCED_MIN_WEEKS, weeks_of_data=weeks, required_weeks=ADVANCED_MIN_WEEKS
+    )
 
 
 def _muscle_codes(db: sqlite3.Connection) -> list[str]:
@@ -328,6 +349,7 @@ def stats_summary(
         recent_prs=_feed(events, 3),
         frequency=_frequency(db, user.id, today, cur_ws),
         totals=_totals(db, user.id),
+        analytics=analytics_gate(db, user.id),
     )
 
 
