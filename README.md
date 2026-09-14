@@ -112,7 +112,7 @@ frontend 빌드(`npm run build`) → `backend`에서 `uv run uvicorn ... --port 
 
 ## Tailscale Funnel — 현재 ON (2026-09-14), Cloudflare Tunnel 전환 전 공개 링크
 
-`tailscale funnel --bg 8000`을 실행해 `https://desktop-8k13b1r.tail6df393.ts.net`이 공개(인터넷) 주소가 됐다. 연구실망에서 Funnel 통과 확인됨. 끄려면 `tailscale funnel --https=443 off` (tailnet 내부 `serve`는 유지). Cloudflare Tunnel 전환 후에는 끈다.
+`tailscale funnel --bg 8000`을 실행해 `https://volume.tail6df393.ts.net`이 공개(인터넷) 주소가 됐다. 연구실망에서 Funnel 통과 확인됨. 끄려면 `tailscale funnel --https=443 off` (tailnet 내부 `serve`는 유지). Cloudflare Tunnel 전환 후에는 끈다.
 
 1. Tailscale 설치 후 로그인 (무료 플랜이면 충분).
 2. PowerShell에서:

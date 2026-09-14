@@ -6,7 +6,7 @@
 $ErrorActionPreference = "Stop"
 $backendDir = Join-Path (Split-Path -Parent $PSScriptRoot) "backend"
 # 폰 접속 주소 (Tailscale serve/funnel) - 안내 출력 전용. 이 PC의 tailnet 이름이 바뀌면 여기만 수정
-$publicUrl = "https://desktop-8k13b1r.tail6df393.ts.net"
+$publicUrl = "https://volume.tail6df393.ts.net"
 
 # 1) 8000 포트를 점유한 프로세스만 정확히 종료 (다른 python 작업은 건드리지 않음)
 $conn = Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction SilentlyContinue
