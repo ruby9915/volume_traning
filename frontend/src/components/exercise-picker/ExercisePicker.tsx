@@ -4,12 +4,11 @@
 // 시트는 선택 후 자동으로 닫히지 않는다 — 호출측이 onSelect에서 닫기(open=false) 처리.
 
 import { useEffect, useMemo, useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import {
   apiErrorMessage,
   archivedConflictOf,
   createExercise,
-  fetchMachines,
   restoreExercise,
 } from "../../api/client";
 import type { Exercise, Region } from "../../api/types";
@@ -37,7 +36,6 @@ function NewExerciseForm({
   onCancel: () => void;
 }) {
   const queryClient = useQueryClient();
-  const machinesQ = useQuery({ queryKey: ["machines"], queryFn: fetchMachines, staleTime: 5 * 60_000 });
   const [values, setValues] = useState<ExerciseFormValues>({ ...EMPTY_FORM, name_ko: initialName });
   const [advOpen, setAdvOpen] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -86,7 +84,6 @@ function NewExerciseForm({
         values={values}
         onChange={setValues}
         exercises={exercises}
-        machines={machinesQ.data ?? []}
         advancedOpen={advOpen}
         onToggleAdvanced={() => setAdvOpen((v) => !v)}
       />

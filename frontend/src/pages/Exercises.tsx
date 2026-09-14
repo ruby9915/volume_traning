@@ -10,7 +10,6 @@ import {
   createExercise,
   deleteExercise,
   fetchExercises,
-  fetchMachines,
   restoreExercise,
   updateExercise,
 } from "../api/client";
@@ -71,7 +70,6 @@ export default function Exercises() {
     queryKey: ["exercises", { includeArchived: true }],
     queryFn: () => fetchExercises(true),
   });
-  const machinesQ = useQuery({ queryKey: ["machines"], queryFn: fetchMachines, staleTime: 5 * 60_000 });
   const me = useMe();
   const isAdmin = me.data?.is_admin ?? false;
   const favorites = useFavorites();
@@ -489,7 +487,6 @@ export default function Exercises() {
             values={form}
             onChange={setForm}
             exercises={all}
-            machines={machinesQ.data ?? []}
             advancedOpen={advOpen}
             onToggleAdvanced={() => setAdvOpen((v) => !v)}
           />

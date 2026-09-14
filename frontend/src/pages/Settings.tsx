@@ -13,7 +13,9 @@ import type { BodyWeightEntry } from "../api/types";
 import Button from "../components/Button";
 import Card from "../components/Card";
 import Spinner from "../components/Spinner";
+import MachinePicker from "../components/machine/MachinePicker";
 import { useMe } from "../hooks/useMe";
+import { useMyMachines } from "../hooks/useMyMachines";
 import {
   INDIRECT_WEIGHT_OPTIONS,
   REST_TARGET_OPTIONS,
@@ -178,6 +180,61 @@ function IndirectWeightSection() {
         고급 분석의 &lsquo;관여 근육 분배&rsquo;에서 보조 근육이 받는 세트 가중치입니다. 메인 볼륨·PR은
         항상 타겟 부위 100%로 계산되며 이 값의 영향을 받지 않습니다.
       </p>
+    </Card>
+  );
+}
+
+// §10.4 내 머신 — 종목 폼의 머신 칸에 보이는 목록. 아카이브(1,400+대) 검색으로 담고 여기서 뺀다.
+function MyMachinesSection() {
+  const mine = useMyMachines();
+  const [open, setOpen] = useState(false);
+  return (
+    <Card>
+      <SectionTitle>내 머신</SectionTitle>
+      {mine.isLoading ? (
+        <div className="flex justify-center py-4">
+          <Spinner size="sm" />
+        </div>
+      ) : mine.machines.length === 0 ? (
+        <p className="mb-3 text-sm text-muted">
+          아직 담은 머신이 없습니다. 헬스장에 있는 머신을 검색해 담아 두면 종목 폼에서 바로 고를 수 있습니다.
+        </p>
+      ) : (
+        <ul className="mb-3 divide-y divide-line border-t border-line">
+          {mine.machines.map((m) => (
+            <li key={m.id} className="flex items-center justify-between gap-3 py-2 text-sm">
+              <span className="min-w-0">
+                <span className="block truncate font-semibold">{m.name_ko}</span>
+                <span className="block truncate text-xs text-muted">
+                  {m.brand} · {m.model}
+                </span>
+              </span>
+              <button
+                type="button"
+                onClick={() => mine.remove(m.id)}
+                disabled={mine.isMutating}
+                className="touch-target shrink-0 text-sm text-muted underline underline-offset-2 active:text-text"
+              >
+                빼기
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      <Button variant="secondary" full onClick={() => setOpen(true)}>
+        ＋ 아카이브에서 검색해 담기
+      </Button>
+      <p className="mt-2 text-xs text-muted">
+        종목의 머신 칸에는 이 목록만 보입니다. 아카이브 전체는 검색으로만 엽니다.
+      </p>
+      <MachinePicker
+        open={open}
+        onClose={() => setOpen(false)}
+        onPick={(m) => {
+          setOpen(false);
+          void mine.add(m.id).catch(() => undefined);
+        }}
+      />
     </Card>
   );
 }
@@ -426,6 +483,7 @@ export default function Settings() {
         <RestTargetSection />
         <TargetBackfillSection />
         <IndirectWeightSection />
+        <MyMachinesSection />
         <BodyweightSection />
         <ExportSection isAdmin={me.data?.is_admin ?? false} />
         <Card>

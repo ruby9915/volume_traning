@@ -767,7 +767,12 @@ tailscale funnel --bg 8000          # 최초 1회 승인 후 상시 유지
 
 - `machine(id, brand, model UNIQUE(brand, model), name_ko, target_id?)`. `seed_data/machines.py` 초안 395대(2026-09-08: Hammer Strength 81, gym80 76, Life Fitness 70, 뉴텍 64, Nautilus 61, Arsenal Strength 43) → **2026-09-14 확장 1,410대, 9개 브랜드**: Hammer Strength 133, gym80 187, Life Fitness 178, 뉴텍 139, Nautilus 162, Arsenal Strength 93, **Cybex 163, Panatta 203, 렉스코 152**(신규 브랜드). 브랜드별 공식 카탈로그 전수 조사(에이전트 9개 병렬, 항목마다 출처 URL 확보; Panatta만 공식 사이트 차단으로 공식 디스트리뷰터·2017 공식 PDF). 단종 모델 포함, 플랫폼·랙 액세서리·덤벨/원판 랙 제외. 모델명은 제조사 표기, `target_id`는 참고값.
 - 시드 규칙: 기동 시 `(brand, model)` INSERT OR IGNORE → 파일에 행을 **추가**하면 재시작만으로 DB에 반영된다. 기존 튜플의 문자열 변경·삭제는 DB에 전파되지 않으므로(변경은 중복행) 하지 않는다. 원 시드에 같은 기계가 두 이름으로 든 사례(Life Fitness `Plate Loaded Shoulder Press` = `Signature Series Plate Loaded Shoulder Press`)는 알고 둔다.
-- 알려진 한계: 한 기계가 라인 이동으로 두 번 들어갔을 가능성(뉴텍 Torque/ON HIM 리버스 하이퍼), Cybex는 lifefitness.com에서 전 제품 '단종' 표시(현행 생산 미확인), 종목 폼의 머신 선택이 단일 `<select>`라 1,400개는 찾기 어렵다 — 검색형 선택기는 별도 결정.
+- 알려진 한계: 한 기계가 라인 이동으로 두 번 들어갔을 가능성(뉴텍 Torque/ON HIM 리버스 하이퍼), Cybex는 lifefitness.com에서 전 제품 '단종' 표시(현행 생산 미확인).
+- **아카이브 + 내 머신 (2026-09-14 사용자 결정, 스키마 v6)**: 카탈로그는 아카이브로 계속 키우되(단종 포함), 사용자는 자기 헬스장에 있는 머신만 검색해 **내 머신**에 담는다. 종목 폼의 머신 칸에는 내 머신 칩만 보이고 아카이브는 검색 시트로만 연다 — "운동할 때마다 종목 추가에 몇천 개가 뜨면 곤란".
+  - `user_machine(user_id, machine_id, created_at, PK(user_id, machine_id))`. v5→v6 데이터 단계: 커스텀 종목에 이미 연결된 머신을 소유자의 내 머신으로 1회 등록.
+  - `GET /api/machines?q=&brand=&limit=`(공백 토큰 AND, 브랜드·모델·한글 별칭, 대소문자 무시, 파라미터 없으면 전체), `GET /api/machines/brands`(브랜드별 대수), `GET/POST/DELETE /api/me/machines[/{id}]`(최근 담은 순). `POST /api/machines` 직접 추가는 추가한 사람의 내 머신에 자동 등록.
+  - 화면: 종목 폼 `MachineField`(없음 / 내 머신 칩 / ＋ 검색해서 추가), `MachinePicker` 시트(브랜드 칩 + 검색, 상위 60개, 직접 추가 폼), 설정 "내 머신"(목록·빼기·검색해 담기). 편집 중인 종목의 머신이 내 목록에 없어도 `machine_label`로 칩을 보여 준다.
+  - 헬스장 단위 관리는 이번엔 없음 — 필요해지면 내 머신에 헬스장 태그를 붙인다.
 - `GET /api/machines`, `POST /api/machines`(누구나 추가, 공용). 종목 폼의 선택 항목. 연식별 타겟 차이는 기록 시 타겟 선택으로 흡수.
 
 ### 10.5 관리자 페이지 (읽기 전용)

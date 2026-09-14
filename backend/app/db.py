@@ -150,6 +150,14 @@ CREATE TABLE IF NOT EXISTS favorite (
     PRIMARY KEY (user_id, exercise_id)
 );
 
+-- §10.4 내 머신 — 아카이브(machine)에서 골라 담은 사용자별 목록. 종목 폼은 이 목록만 보여준다.
+CREATE TABLE IF NOT EXISTS user_machine (
+    user_id    INTEGER NOT NULL REFERENCES user(id) ON DELETE CASCADE,
+    machine_id INTEGER NOT NULL REFERENCES machine(id) ON DELETE CASCADE,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (user_id, machine_id)
+);
+
 -- §11.2 종목의 보조(협응) 근육 — 간접 볼륨 후보. 기본 타겟은 여기 넣지 않는다 (VIEW가 합친다)
 CREATE TABLE IF NOT EXISTS exercise_secondary_target (
     exercise_id INTEGER NOT NULL REFERENCES exercise(id) ON DELETE CASCADE,
@@ -193,7 +201,7 @@ CREATE TABLE IF NOT EXISTS body_weight_log (
 );
 """
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 # v1 → v2 (§3.6): 당시 추가된 속성 6컬럼. v4에서 4개는 tags로 흡수·삭제된다.
 _V2_ATTR_COLUMNS = ("base_movement", "equipment", "support", "grip", "angle", "aliases")
@@ -242,6 +250,8 @@ def _migrate_structure(conn: sqlite3.Connection) -> int:
       workout_session.user_id, body_weight_log 재구축(UNIQUE(user_id, date)).
     v4→v5 (§11.2): exercise_secondary_target 테이블(DDL) + set_indirect VIEW. 구조 변경 없음 —
       데이터 단계(_apply_v5_data)가 내장 종목의 보조 근육을 시드로 채운다.
+    v5→v6 (§10.4 내 머신): user_machine 테이블(DDL). 구조 변경 없음 — 데이터 단계(_apply_v6_data)가
+      사용자가 이미 종목에 연결해 둔 머신을 내 머신으로 등록한다.
     """
     version = conn.execute("PRAGMA user_version").fetchone()[0]
     if version >= SCHEMA_VERSION:
@@ -509,6 +519,19 @@ def _apply_v5_data(conn: sqlite3.Connection) -> list[str]:
     return [f"secondary targets seeded: {filled} exercises"] if filled else []
 
 
+def _apply_v6_data(conn: sqlite3.Connection) -> list[str]:
+    """v6 데이터 단계 (§10.4): 커스텀 종목에 연결된 머신을 소유자의 내 머신으로 등록 (한 번).
+
+    이후에는 종목 폼에서 아카이브 검색으로 담거나, 직접 추가한 머신이 자동으로 들어간다.
+    """
+    cur = conn.execute(
+        "INSERT OR IGNORE INTO user_machine (user_id, machine_id)"
+        " SELECT DISTINCT e.user_id, e.machine_id FROM exercise e"
+        " WHERE e.user_id IS NOT NULL AND e.machine_id IS NOT NULL"
+    )
+    return [f"user machines backfilled: {cur.rowcount}"] if cur.rowcount else []
+
+
 def init_db(db_path: str | None = None) -> list[str]:
     """스키마 생성·마이그레이션·시드. 반환: 마이그레이션 로그 (테스트·기동 로그용)."""
     conn = _connect(db_path or get_settings().DB_PATH)
@@ -523,6 +546,8 @@ def init_db(db_path: str | None = None) -> list[str]:
             log += _apply_v4_data(conn)
         if from_version < 5:
             log += _apply_v5_data(conn)
+        if from_version < 6:
+            log += _apply_v6_data(conn)
         if from_version < SCHEMA_VERSION:
             conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         conn.commit()

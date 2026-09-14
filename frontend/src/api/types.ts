@@ -73,6 +73,17 @@ export interface MachineCreateRequest {
   target?: TargetCode;
 }
 
+export interface MachineSearchParams {
+  q?: string;
+  brand?: string;
+  limit?: number;
+}
+
+export interface BrandCount {
+  brand: string;
+  count: number;
+}
+
 // ---------- Exercises (§10.3) ----------
 
 export interface Exercise {

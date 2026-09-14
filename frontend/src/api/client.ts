@@ -15,6 +15,7 @@ import type {
   ExerciseUpdateRequest,
   FamilyStats,
   FatigueStats,
+  BrandCount,
   Favorites,
   InsufficientDataDetail,
   IntensityStats,
@@ -22,6 +23,7 @@ import type {
   LoginResponse,
   Machine,
   MachineCreateRequest,
+  MachineSearchParams,
   MuscleStats,
   OutboxItem,
   PasswordChangeRequest,
@@ -231,8 +233,32 @@ export function fetchTargets(): Promise<Target[]> {
   return api("/api/targets");
 }
 
-export function fetchMachines(): Promise<Machine[]> {
-  return api("/api/machines");
+/** 아카이브 검색 — 파라미터 없으면 전체(1,400+). 폼·시트는 q/brand/limit으로 좁혀 부른다. */
+export function fetchMachines(params: MachineSearchParams = {}): Promise<Machine[]> {
+  const sp = new URLSearchParams();
+  if (params.q) sp.set("q", params.q);
+  if (params.brand) sp.set("brand", params.brand);
+  if (params.limit) sp.set("limit", String(params.limit));
+  const qs = sp.toString();
+  return api(`/api/machines${qs ? `?${qs}` : ""}`);
+}
+
+export function fetchMachineBrands(): Promise<BrandCount[]> {
+  return api("/api/machines/brands");
+}
+
+// ---------- 내 머신 (§10.4) ----------
+
+export function fetchMyMachines(): Promise<Machine[]> {
+  return api("/api/me/machines");
+}
+
+export function addMyMachine(machineId: number): Promise<Machine[]> {
+  return api(`/api/me/machines/${machineId}`, { method: "POST" });
+}
+
+export function removeMyMachine(machineId: number): Promise<Machine[]> {
+  return api(`/api/me/machines/${machineId}`, { method: "DELETE" });
 }
 
 export function createMachine(body: MachineCreateRequest): Promise<Machine> {

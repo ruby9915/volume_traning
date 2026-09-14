@@ -2,8 +2,9 @@
 // 종목 선택 시트의 "새 종목 만들기"와 종목 관리 화면이 공용으로 쓴다.
 // 속성→부위/계수 자동 유도 없음, 이름 자동 조합 없음 (§3.6 반증·사용자 결정).
 import { useMemo, useState } from "react";
-import type { Exercise, ExerciseCreateRequest, Machine, TargetCode } from "../../api/types";
+import type { Exercise, ExerciseCreateRequest, TargetCode } from "../../api/types";
 import { useTargets } from "../../hooks/useTargets";
+import MachineField from "../machine/MachineField";
 import TargetSheet from "../target/TargetSheet";
 import { distinctBaseMovements, distinctTags, parseTags } from "./attributeUtils";
 
@@ -14,6 +15,7 @@ export interface ExerciseFormValues {
   default_target: TargetCode | null;
   secondary_targets: TargetCode[]; // §11.2 보조 근육 (간접 볼륨 후보)
   machine_id: number | null;
+  machine_label: string | null; // 표시용 (편집 시 machine_name) — 요청 본문에는 안 들어간다
   bodyweight_factor: string;
   load_multiplier: string;
 }
@@ -27,6 +29,7 @@ export const EMPTY_FORM: ExerciseFormValues = {
   default_target: null,
   secondary_targets: [],
   machine_id: null,
+  machine_label: null,
   bodyweight_factor: "0",
   load_multiplier: "1",
 };
@@ -39,6 +42,7 @@ export function formFromExercise(ex: Exercise): ExerciseFormValues {
     default_target: ex.default_target,
     secondary_targets: ex.secondary_targets,
     machine_id: ex.machine_id,
+    machine_label: ex.machine_name ?? null,
     bodyweight_factor: String(ex.bodyweight_factor),
     load_multiplier: String(ex.load_multiplier),
   };
@@ -192,7 +196,6 @@ export default function ExerciseForm({
   values,
   onChange,
   exercises,
-  machines,
   advancedOpen,
   onToggleAdvanced,
 }: {
@@ -200,7 +203,6 @@ export default function ExerciseForm({
   onChange: (next: ExerciseFormValues) => void;
   /** 자동완성 소스 (계열·태그) */
   exercises: Exercise[];
-  machines: Machine[];
   advancedOpen: boolean;
   onToggleAdvanced: () => void;
 }) {
@@ -278,21 +280,11 @@ export default function ExerciseForm({
 
       <TagBox tags={values.tags} suggestions={tagOptions} onChange={(tags) => set({ tags })} />
 
-      <label className="block">
-        <span className="text-sm text-muted">머신 (선택)</span>
-        <select
-          value={values.machine_id ?? ""}
-          onChange={(e) => set({ machine_id: e.target.value ? Number(e.target.value) : null })}
-          className={`${INPUT_CLS} touch-target`}
-        >
-          <option value="">없음</option>
-          {machines.map((m) => (
-            <option key={m.id} value={m.id}>
-              {m.brand} · {m.model}
-            </option>
-          ))}
-        </select>
-      </label>
+      <MachineField
+        value={values.machine_id}
+        label={values.machine_label}
+        onChange={(m) => set({ machine_id: m ? m.id : null, machine_label: m ? m.name_ko : null })}
+      />
 
       <div>
         <button type="button" className="touch-target text-sm text-muted" onClick={onToggleAdvanced}>

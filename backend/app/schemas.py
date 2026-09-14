@@ -139,6 +139,11 @@ class MachineOut(BaseModel):
     target: str | None = None
 
 
+class BrandCountOut(BaseModel):
+    brand: str
+    count: int
+
+
 # ---------- Exercises (§10.3) ----------
 
 class ExerciseCreate(StrictModel):

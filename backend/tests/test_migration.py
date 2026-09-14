@@ -337,6 +337,48 @@ def test_migrate_v4_to_v5_fills_once_and_respects_edits(tmp_path, env):
         conn.close()
 
 
+def test_migrate_v5_to_v6_backfills_user_machines(tmp_path, env):
+    """v5 DB(user_machine 없음): 커스텀 종목에 연결된 머신이 소유자의 내 머신으로 한 번 등록된다."""
+    path = str(tmp_path / "v5.db")
+    init_db(path)
+    conn = _connect(path)
+    try:
+        admin = conn.execute("SELECT id FROM user ORDER BY id LIMIT 1").fetchone()[0]
+        machine = conn.execute("SELECT id FROM machine ORDER BY id LIMIT 1").fetchone()[0]
+        chest = conn.execute("SELECT id FROM muscle_group WHERE code = 'chest'").fetchone()[0]
+        conn.execute(
+            "INSERT INTO exercise (name_ko, default_target_id, machine_id, user_id, is_builtin)"
+            " VALUES ('마이그 머신 종목', ?, ?, ?, 0)",
+            (chest, machine, admin),
+        )
+        conn.execute("DROP TABLE user_machine")
+        conn.execute("PRAGMA user_version = 5")
+        conn.commit()
+    finally:
+        conn.close()
+
+    log = init_db(path)
+    assert any(line.startswith("user machines backfilled: 1") for line in log), log
+    conn = _connect(path)
+    try:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+        assert conn.execute(
+            "SELECT 1 FROM user_machine WHERE user_id = ? AND machine_id = ?", (admin, machine)
+        ).fetchone()
+        # 사용자가 지운 뒤 재기동해도 되살아나지 않는다 (데이터 단계는 한 번)
+        conn.execute("DELETE FROM user_machine")
+        conn.commit()
+    finally:
+        conn.close()
+    log = init_db(path)
+    assert not any(line.startswith("user machines backfilled") for line in log), log
+    conn = _connect(path)
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM user_machine").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
 def test_migration_idempotent_on_restart(tmp_path, env):
     path = str(tmp_path / "v3.db")
     _make_v3_db(path)
