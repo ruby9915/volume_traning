@@ -765,7 +765,9 @@ tailscale funnel --bg 8000          # 최초 1회 승인 후 상시 유지
 
 ### 10.4 머신 카탈로그
 
-- `machine(id, brand, model UNIQUE(brand, model), name_ko, target_id?)`. `seed_data/machines.py` 초안 395대: Hammer Strength 81, gym80 76, Life Fitness 70, 뉴텍 64, Nautilus 61, Arsenal Strength 43 (2026-09-08 웹 조사, 제조사 카탈로그·국내 딜러 페이지). 모델명은 제조사 표기, `target_id`는 참고값.
+- `machine(id, brand, model UNIQUE(brand, model), name_ko, target_id?)`. `seed_data/machines.py` 초안 395대(2026-09-08: Hammer Strength 81, gym80 76, Life Fitness 70, 뉴텍 64, Nautilus 61, Arsenal Strength 43) → **2026-09-14 확장 1,410대, 9개 브랜드**: Hammer Strength 133, gym80 187, Life Fitness 178, 뉴텍 139, Nautilus 162, Arsenal Strength 93, **Cybex 163, Panatta 203, 렉스코 152**(신규 브랜드). 브랜드별 공식 카탈로그 전수 조사(에이전트 9개 병렬, 항목마다 출처 URL 확보; Panatta만 공식 사이트 차단으로 공식 디스트리뷰터·2017 공식 PDF). 단종 모델 포함, 플랫폼·랙 액세서리·덤벨/원판 랙 제외. 모델명은 제조사 표기, `target_id`는 참고값.
+- 시드 규칙: 기동 시 `(brand, model)` INSERT OR IGNORE → 파일에 행을 **추가**하면 재시작만으로 DB에 반영된다. 기존 튜플의 문자열 변경·삭제는 DB에 전파되지 않으므로(변경은 중복행) 하지 않는다. 원 시드에 같은 기계가 두 이름으로 든 사례(Life Fitness `Plate Loaded Shoulder Press` = `Signature Series Plate Loaded Shoulder Press`)는 알고 둔다.
+- 알려진 한계: 한 기계가 라인 이동으로 두 번 들어갔을 가능성(뉴텍 Torque/ON HIM 리버스 하이퍼), Cybex는 lifefitness.com에서 전 제품 '단종' 표시(현행 생산 미확인), 종목 폼의 머신 선택이 단일 `<select>`라 1,400개는 찾기 어렵다 — 검색형 선택기는 별도 결정.
 - `GET /api/machines`, `POST /api/machines`(누구나 추가, 공용). 종목 폼의 선택 항목. 연식별 타겟 차이는 기록 시 타겟 선택으로 흡수.
 
 ### 10.5 관리자 페이지 (읽기 전용)
