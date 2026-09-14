@@ -110,7 +110,9 @@ frontend 빌드(`npm run build`) → `backend`에서 `uv run uvicorn ... --port 
 - 공개 URL이 되므로 가입 제한(초대코드 또는 Cloudflare Access)은 별도 결정 사항이다 (SETTING.MD §12.3).
 - 이후 NAS 구축 시 직접 노출(Caddy + 포트포워딩)로 전환 예정 — 절차는 SETTING.MD §12.4.
 
-## (예비) Tailscale — tailnet 내부 접속용
+## Tailscale Funnel — 현재 ON (2026-09-14), Cloudflare Tunnel 전환 전 공개 링크
+
+`tailscale funnel --bg 8000`을 실행해 `https://desktop-8k13b1r.tail6df393.ts.net`이 공개(인터넷) 주소가 됐다. 연구실망에서 Funnel 통과 확인됨. 끄려면 `tailscale funnel --https=443 off` (tailnet 내부 `serve`는 유지). Cloudflare Tunnel 전환 후에는 끈다.
 
 1. Tailscale 설치 후 로그인 (무료 플랜이면 충분).
 2. PowerShell에서:
@@ -166,4 +168,4 @@ frontend 빌드(`npm run build`) → `backend`에서 `uv run uvicorn ... --port 
 
 - **Task Scheduler에서 `npm`/`uv`를 못 찾음**: 스케줄러 실행 환경의 PATH에 없기 때문. 시스템 환경변수 PATH에 Node·uv 경로를 추가하거나, `start-server.ps1` 상단에서 전체 경로를 쓰도록 수정.
 - **재부팅 직후 앱이 안 열림**: 정상 범위 — 부팅 + 빌드 몇 분의 다운타임은 설계상 수용 (SETTING.MD §9). 그 순간의 기록은 폰 메모 후 나중 입력.
-- **Funnel URL이 안 열림**: PC에서 `tailscale status`·`tailscale funnel status` 확인. 기관 방화벽이 원인이면 위 "Tailscale Funnel 설정"의 대안 참조.
+- **Funnel URL이 안 열림**: PC에서 `tailscale status`·`tailscale funnel status` 확인. 이 PC 브라우저로는 tailnet 경로로 열리므로 외부 확인은 폰 LTE로 한다.

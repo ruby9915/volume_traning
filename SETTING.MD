@@ -900,7 +900,7 @@ PC에 설정 파일을 두지 않고 대시보드에서 호스트명·라우팅�
 운영 규칙:
 - cloudflared 서비스는 `VolumeApp-StartServer` 예약 작업과 독립이다. 앱이 죽어도 터널은 살아 있고(엣지가 502), 앱이 살아나면 자동 복구.
 - 앱은 계속 `127.0.0.1`만 듣는다. Windows 방화벽 인바운드 개방·포트포워딩 없음.
-- Tailscale `serve`는 tailnet 내부 예비 경로로 유지(삭제하지 않음). 두 경로가 동시에 같은 서버를 가리켜도 무방.
+- Tailscale: **2026-09-14 `tailscale funnel --bg 8000` 실행 → Funnel ON(공개)**. 사용자 지시로 켰고, 연구실망에서 Funnel이 막히지 않음을 확인했다(공개 DNS(DoH)로 `desktop-8k13b1r.tail6df393.ts.net` → Funnel 입구 IP 103.84.155.153/.217, 그 IP로 강제 접속 시 `/health`·index 200, 8/8 성공). Cloudflare Tunnel로 옮기기 전까지 이 주소가 지인 공개 링크다. 끄기: `tailscale funnel --https=443 off`(tailnet 내부 `serve`는 남는다). 두 경로가 동시에 같은 서버를 가리켜도 무방. 주의: 이 PC에서 ts.net 주소를 열면 NRPT 규칙(100.100.100.100)이 가로채 tailnet 경로로 가므로 외부 검증은 DoH+`--resolve` 또는 폰 LTE로 한다.
 - 캐시: 앱이 보내는 `Cache-Control`(HTML no-cache, /assets immutable, /api no-store)을 Cloudflare가 그대로 따른다. 배포 후 index.html은 매번 재검증되므로 별도 캐시 퍼지는 불필요.
 
 ### 12.3 공개에 따른 보안 메모
