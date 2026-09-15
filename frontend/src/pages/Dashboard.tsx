@@ -21,6 +21,7 @@ import Spinner from "../components/Spinner";
 import TrendLineChart, { LINE_CHART_THEME } from "../components/charts/TrendLineChart";
 import AdvancedAnalytics from "../components/dashboard/AdvancedAnalytics";
 import { useSubject } from "../subject";
+import { collapseLabel, useCollapsed } from "../hooks/useCollapsed";
 
 type PeriodMode = "weekly" | "monthly";
 /** §10.2 부위별 분배 드릴다운 단계 — 부위(6) → 근육 → 세부 */
@@ -93,36 +94,13 @@ function CardTitle({
           aria-expanded={!collapsed}
           className="touch-target -my-2 -mr-2 shrink-0 px-2 text-xs font-semibold text-muted active:text-text"
         >
-          {collapsed ? "펼치기 ▾" : "접기 ▴"}
+          {collapseLabel(collapsed ?? false)}
         </button>
       ) : null}
     </div>
   );
 }
 
-/** 카드 접힘 상태 — 기기별로 기억 (localStorage, 실패해도 기본값으로 동작) */
-function useCollapsed(key: string, initial = false): [boolean, () => void] {
-  const storageKey = `vt_collapsed_${key}`;
-  const [collapsed, setCollapsed] = useState<boolean>(() => {
-    try {
-      const v = localStorage.getItem(storageKey);
-      return v === null ? initial : v === "1";
-    } catch {
-      return initial;
-    }
-  });
-  const toggle = () =>
-    setCollapsed((c) => {
-      const next = !c;
-      try {
-        localStorage.setItem(storageKey, next ? "1" : "0");
-      } catch {
-        /* 저장 실패는 무시 — 이번 세션만 유지 */
-      }
-      return next;
-    });
-  return [collapsed, toggle];
-}
 
 function Loading() {
   return (

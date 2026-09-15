@@ -27,6 +27,7 @@ import ExerciseForm, {
 } from "../components/exercise-form/ExerciseForm";
 import TagChips from "../components/exercise-form/TagChips";
 import { exerciseMatchesQuery } from "../components/exercise-form/attributeUtils";
+import { collapseLabel, useCollapsed } from "../hooks/useCollapsed";
 import { useFavorites } from "../hooks/useFavorites";
 import { useMe } from "../hooks/useMe";
 import { useTargets } from "../hooks/useTargets";
@@ -73,6 +74,7 @@ export default function Exercises() {
   const me = useMe();
   const isAdmin = me.data?.is_admin ?? false;
   const favorites = useFavorites();
+  const [favCollapsed, toggleFav] = useCollapsed("favorites"); // 2026-09-15 사용자 요청: 즐겨찾기 접기
   const { nameOf, regionOf } = useTargets();
 
   const [query, setQuery] = useState("");
@@ -339,17 +341,27 @@ export default function Exercises() {
       <section className="mt-3 rounded-card bg-surface p-4 shadow-card">
         <div className="flex items-center justify-between">
           <h2 className="text-sm font-semibold">★ 즐겨찾기 <span className="font-numeric text-xs font-normal text-faint">{favoriteList.length}</span></h2>
-          {favoriteList.length > 1 ? (
+          <div className="flex items-center gap-1">
+            {favoriteList.length > 1 && !favCollapsed ? (
+              <button
+                type="button"
+                className="touch-target text-xs font-semibold text-accent"
+                onClick={() => setFavEditing((v) => !v)}
+              >
+                {favEditing ? "완료" : "순서 편집"}
+              </button>
+            ) : null}
             <button
               type="button"
-              className="touch-target text-xs font-semibold text-accent"
-              onClick={() => setFavEditing((v) => !v)}
+              aria-expanded={!favCollapsed}
+              className="touch-target -mr-2 px-2 text-xs font-semibold text-muted active:text-text"
+              onClick={toggleFav}
             >
-              {favEditing ? "완료" : "순서 편집"}
+              {collapseLabel(favCollapsed)}
             </button>
-          ) : null}
+          </div>
         </div>
-        {favoriteList.length === 0 ? (
+        {favCollapsed ? null : favoriteList.length === 0 ? (
           <p className="mt-2 text-xs text-muted">
             아래 목록에서 ☆를 눌러 자주 하는 종목을 모아 두면 기록 화면 종목 선택이 빨라집니다.
           </p>
