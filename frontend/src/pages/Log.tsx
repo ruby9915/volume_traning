@@ -22,6 +22,7 @@ import type {
   TargetCode,
   WorkoutSet,
 } from "../api/types";
+import type { Technique } from "../api/types";
 import { useTargets } from "../hooks/useTargets";
 import { useAppStore } from "../store";
 import { useResolvedTheme } from "../theme";
@@ -39,6 +40,7 @@ import ExercisePicker from "../components/exercise-picker/ExercisePicker";
 import { pushRecent } from "../components/exercise-picker/recentExercises";
 import TargetBackfillModal from "../components/target/TargetBackfillModal";
 import TargetChipButton from "../components/target/TargetChipButton";
+import TechniqueChip, { TechniqueBadge } from "../components/TechniqueChip";
 import TargetSheet from "../components/target/TargetSheet";
 import { useTargetBackfill } from "../components/target/useTargetBackfill";
 
@@ -90,6 +92,7 @@ interface LSet {
   is_warmup: boolean;
   volume_kg: number | null;
   target: TargetCode; // §10.2 세트 타겟 (전송 대기 세트는 카드 타겟 또는 종목 기본)
+  technique: Technique | null; // §14 운동 방식
   created_ms: number;
   pending: boolean;
   prW: boolean;
@@ -144,6 +147,7 @@ function SetEditor({
   const [w, setW] = useState(s.weight_kg);
   const [r, setR] = useState(s.reps);
   const [warm, setWarm] = useState(s.is_warmup);
+  const [technique, setTechnique] = useState<Technique | null>(s.technique);
   const [target, setTarget] = useState<TargetCode>(s.target);
   const [sheetOpen, setSheetOpen] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -158,7 +162,7 @@ function SetEditor({
     setBusy(true);
     setErr(null);
     try {
-      onSaved(await updateSet(s.id as number, { weight_kg: w, reps: r, is_warmup: warm, target }));
+      onSaved(await updateSet(s.id as number, { weight_kg: w, reps: r, is_warmup: warm, target, technique }));
     } catch (e) {
       setErr(apiErrorMessage(e));
       setBusy(false);
@@ -196,6 +200,7 @@ function SetEditor({
       </div>
       <div className="mt-3 flex items-center gap-3">
         <WarmupToggle on={warm} onToggle={() => setWarm(!warm)} />
+        <TechniqueChip value={technique} onChange={setTechnique} />
         {/* §10.2 개별 세트 타겟 변경 */}
         <TargetChipButton value={target} defaultCode={defaultTarget} onClick={() => setSheetOpen(true)} />
       </div>
@@ -464,6 +469,7 @@ export default function Log() {
             is_warmup: s.is_warmup,
             volume_kg: s.volume_kg,
             target: s.target,
+            technique: s.technique ?? null,
             created_ms: parseTs(s.created_at),
             pending: false,
             prW: pr?.w ?? false,
@@ -487,6 +493,7 @@ export default function Log() {
         is_warmup: s.is_warmup,
         volume_kg: s.volume_kg,
         target: s.target,
+        technique: s.technique ?? null,
         created_ms: parseTs(s.created_at),
         pending: false,
         prW: s.is_weight_pr,
@@ -509,6 +516,7 @@ export default function Log() {
         is_warmup: o.is_warmup,
         volume_kg: null,
         target: o.target ?? g.default_target,
+        technique: o.technique ?? null,
         created_ms: parseTs(o.queued_at),
         pending: true,
         prW: false,
@@ -553,11 +561,11 @@ export default function Log() {
     const g = groups.find((x) => x.exercise_id === ex.id);
     const last = g?.sets[g.sets.length - 1];
     if (last) {
-      setStepper({ weight_kg: last.weight_kg, reps: last.reps, is_warmup: false });
+      setStepper({ weight_kg: last.weight_kg, reps: last.reps, is_warmup: false, technique: null });
       awaitLastRecordRef.current = null;
     } else {
       // 프리필 ③ 빈 값 (§5.3) — 임의 기본 중량을 넣지 않는다
-      setStepper({ weight_kg: 0, reps: 8, is_warmup: false });
+      setStepper({ weight_kg: 0, reps: 8, is_warmup: false, technique: null });
       awaitLastRecordRef.current = ex.id;
     }
     if (ex.bodyweight_factor > 0 && !bwPromptedRef.current) {
@@ -582,12 +590,12 @@ export default function Log() {
     pushRecent(g.exercise_id);
     awaitLastRecordRef.current = null;
     const last = g.sets[g.sets.length - 1];
-    if (last) setStepper({ weight_kg: last.weight_kg, reps: last.reps, is_warmup: false });
+    if (last) setStepper({ weight_kg: last.weight_kg, reps: last.reps, is_warmup: false, technique: null });
   };
 
   const completeSet = async () => {
     if (activeExerciseId == null) return;
-    const { weight_kg, reps, is_warmup } = stepper;
+    const { weight_kg, reps, is_warmup, technique } = stepper;
     const err = validateSetInput(weight_kg, reps);
     if (err) {
       setInputError(err);
@@ -608,6 +616,7 @@ export default function Log() {
       weight_kg,
       reps,
       is_warmup,
+      technique,
       new_session: isNewSession || undefined,
       // §10.2 카드 sticky 타겟 — 미지정이면 필드 자체를 생략 (종목 기본 타겟)
       target: useAppStore.getState().targets[activeExerciseId],
@@ -667,6 +676,7 @@ export default function Log() {
                       volume_kg: updated.volume_kg,
                       target: updated.target,
                       target_ko: updated.target_ko,
+                      technique: updated.technique,
                     }
                   : x,
               ),
@@ -772,6 +782,7 @@ export default function Log() {
               웜업
             </span>
           ) : null}
+          <TechniqueBadge technique={s.technique} />
           {/* §10.2 종목 기본과 다른 타겟만 뱃지 — 기본이면 노이즈 없음 */}
           {s.target !== g.default_target ? (
             <span className="shrink-0 rounded-tag bg-accent-glow px-1.5 py-0.5 text-[10px] font-semibold text-accent">
@@ -913,6 +924,7 @@ export default function Log() {
             on={stepper.is_warmup}
             onToggle={() => setStepper({ is_warmup: !stepper.is_warmup })}
           />
+          <TechniqueChip value={stepper.technique} onChange={(t) => setStepper({ technique: t })} />
           {inputError ? <p className="min-w-0 text-sm text-danger">{inputError}</p> : null}
         </div>
         <Button size="lg" full onClick={() => void completeSet()}>

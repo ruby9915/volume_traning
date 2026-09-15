@@ -10,7 +10,7 @@ from fastapi.staticfiles import StaticFiles
 
 from . import auth, backup
 from .config import get_settings
-from .db import init_db
+from .db import init_db, open_request_db
 from .routers import admin, analytics, catalog, exercises, friends, sessions, stats
 
 logger = logging.getLogger("app")
@@ -52,6 +52,33 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="운동 볼륨 트래킹", lifespan=lifespan)
+
+
+@app.middleware("http")
+async def request_db(request: Request, call_next):
+    """§14: /api 요청당 SQLite 연결 하나. 핸들러가 끝나면 **응답을 보내기 전에** 커밋한다.
+
+    2xx/3xx는 commit, 4xx/5xx·예외는 rollback. (yield 의존성의 종료 코드는 FastAPI 0.118+에서
+    응답 전송 뒤에 돌아, 수정 직후 재조회가 옛 값을 읽는 경합이 있었다.)
+    """
+    if not request.url.path.startswith("/api/"):
+        return await call_next(request)
+    conn = open_request_db()
+    request.state.db = conn
+    try:
+        response = await call_next(request)
+    except BaseException:
+        conn.rollback()
+        conn.close()
+        raise
+    try:
+        if response.status_code < 400:
+            conn.commit()
+        else:
+            conn.rollback()
+    finally:
+        conn.close()
+    return response
 
 # auth 라우터는 공개(login/register)와 보호(me/password) 경로를 함께 갖고 경로별로 의존성을 건다
 app.include_router(auth.router)

@@ -351,6 +351,9 @@ export default function Dashboard() {
             </p>
             <span className="text-sm dark:hidden">{changeEl}</span>
           </div>
+          <p className="mt-0.5 text-[11px] text-hero-muted">
+            볼륨 = 중량×횟수 합, 세트의 타겟 부위에 100% 귀속 · 막대는 최근 12{mode === "weekly" ? "주" : "개월"}, 누르면 값
+          </p>
           <div className="mt-1.5 flex items-end gap-3">
             <p className="font-numeric text-[46px] leading-none font-bold tracking-[-1px] dark:text-[58px] dark:tracking-normal">
               {fmtInt(heroValue)}
@@ -404,11 +407,14 @@ export default function Dashboard() {
             </Card>
           ))}
         </div>
+        <p className="-mt-1.5 px-1 text-[11px] text-muted">
+          이번 주 세션·세트 수 · PR = 이번 주 갱신한 종목별 최고 중량·e1RM 기록 수
+        </p>
 
         {/* 부위별 분배 — 타겟 100% 귀속, 부위 → 근육 → 세부 드릴다운 */}
         <Card className={musclesQ.isPlaceholderData ? "opacity-60" : ""}>
           <div className="mb-3 flex items-baseline justify-between gap-2">
-            <CardTitle title="부위별 분배" note={rangeNote} />
+            <CardTitle title="부위별 분배" note={`${rangeNote} · 타겟 부위별 볼륨 비율`} />
             <div className="-mt-4 flex rounded-full bg-well p-0.5 dark:rounded-[7px]">
               {DIST_LEVELS.map((l) => (
                 <button
@@ -455,6 +461,7 @@ export default function Dashboard() {
 
         {/* 최근 PR — 종목명 + 종류·날짜 캡션 + 기록값 */}
         <Card>
+          <CardTitle title="최근 PR" note="종목별 최고 중량 또는 e1RM(추정 1RM) 갱신 이력" />
           {prsQ.isPending ? (
             <Loading />
           ) : prsQ.isError ? (
@@ -494,13 +501,9 @@ export default function Dashboard() {
         >
           <CardTitle
             title="종목별 진행"
-            note={
-              familyBase !== null
-                ? "계열 합산 · 웜업 제외"
-                : includeWarmup
-                  ? "웜업 포함"
-                  : "웜업 제외"
-            }
+            note={`날짜별 볼륨과 최고 e1RM 추이 · ${
+              familyBase !== null ? "계열 합산 · 웜업 제외" : includeWarmup ? "웜업 포함" : "웜업 제외"
+            }`}
           />
           {prsQ.isPending ? (
             <Loading />

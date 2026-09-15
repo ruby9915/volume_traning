@@ -22,6 +22,7 @@ import type {
   SessionExerciseGroup,
   TargetCode,
 } from "../api/types";
+import type { Technique } from "../api/types";
 import Button from "../components/Button";
 import Card from "../components/Card";
 import DashedAddButton from "../components/DashedAddButton";
@@ -32,6 +33,7 @@ import Stepper from "../components/Stepper";
 import ExercisePicker from "../components/exercise-picker/ExercisePicker";
 import TargetBackfillModal from "../components/target/TargetBackfillModal";
 import TargetChipButton from "../components/target/TargetChipButton";
+import TechniqueChip, { TechniqueBadge } from "../components/TechniqueChip";
 import TargetSheet from "../components/target/TargetSheet";
 import { useTargetBackfill } from "../components/target/useTargetBackfill";
 import { useTargets } from "../hooks/useTargets";
@@ -45,6 +47,7 @@ interface SetFormValues {
   reps: number;
   is_warmup: boolean;
   target: TargetCode; // §10.2 세트 타겟 (항상 값 있음)
+  technique: Technique | null; // §14 운동 방식
 }
 
 function groupVolume(g: SessionExerciseGroup): number {
@@ -53,7 +56,7 @@ function groupVolume(g: SessionExerciseGroup): number {
 
 // §5.3: 새 종목 첫 세트에 임의 기본 중량을 넣지 않는다
 function emptySet(target: TargetCode): SetFormValues {
-  return { weight_kg: 0, reps: 8, is_warmup: false, target };
+  return { weight_kg: 0, reps: 8, is_warmup: false, target, technique: null };
 }
 
 // cardTarget: 카드 타겟 칩에서 명시 선택된 값(§10.2 sticky). undefined = 칩 미조작 →
@@ -62,7 +65,7 @@ function prefillFrom(g: SessionExerciseGroup, cardTarget?: TargetCode): SetFormV
   const last = g.sets[g.sets.length - 1];
   const target = cardTarget ?? last?.target ?? g.default_target;
   return last
-    ? { weight_kg: last.weight_kg, reps: last.reps, is_warmup: false, target }
+    ? { weight_kg: last.weight_kg, reps: last.reps, is_warmup: false, target, technique: last.technique ?? null }
     : emptySet(target);
 }
 
@@ -135,6 +138,7 @@ function SetEditor({
           />
           웜업 세트
         </label>
+        <TechniqueChip value={values.technique} onChange={(t) => setValues((v) => ({ ...v, technique: t }))} />
         <TargetChipButton value={values.target} defaultCode={defaultTarget} onClick={() => setSheetOpen(true)} />
       </div>
       {error && <p className="mt-2 text-center text-sm text-danger">{error}</p>}
@@ -316,6 +320,7 @@ function NewSessionEditor() {
         reps: v.reps,
         is_warmup: v.is_warmup,
         target: v.target,
+        technique: v.technique,
         // 첫 세트만 새 세션 생성 — 큐 대기 중 추가 세트는 같은 날짜 lazy 귀속 (flush 순서 보존)
         new_session: sessionRequestedRef.current ? undefined : true,
       });
@@ -480,6 +485,7 @@ function ExistingSessionDetail({ sessionIdParam }: { sessionIdParam: string }) {
         reps: v.reps,
         is_warmup: v.is_warmup,
         target: v.target,
+        technique: v.technique,
       });
       setEditingSetId(null);
       await reload();
@@ -517,6 +523,7 @@ function ExistingSessionDetail({ sessionIdParam }: { sessionIdParam: string }) {
         reps: v.reps,
         is_warmup: v.is_warmup,
         target: v.target,
+        technique: v.technique,
         session_id: data!.id,
       });
       setAddingExerciseId(null);
@@ -711,7 +718,7 @@ function ExistingSessionDetail({ sessionIdParam }: { sessionIdParam: string }) {
               editingSetId === s.id ? (
                 <li key={s.id}>
                   <SetEditor
-                    initial={{ weight_kg: s.weight_kg, reps: s.reps, is_warmup: s.is_warmup, target: s.target }}
+                    initial={{ weight_kg: s.weight_kg, reps: s.reps, is_warmup: s.is_warmup, target: s.target, technique: s.technique }}
                     defaultTarget={g.default_target}
                     saveLabel="저장"
                     busy={busy}
@@ -743,6 +750,7 @@ function ExistingSessionDetail({ sessionIdParam }: { sessionIdParam: string }) {
                         웜업
                       </span>
                     )}
+                    <TechniqueBadge technique={s.technique} />
                     {/* §10.2 종목 기본과 다른 타겟만 뱃지 */}
                     {s.target !== g.default_target && (
                       <span className="rounded-tag bg-accent-glow px-1.5 py-0.5 text-[10px] font-semibold text-accent">

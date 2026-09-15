@@ -219,6 +219,7 @@ export interface SaveSetInput {
   note?: string;
   // §10.2 세트 타겟 — 미지정/null = 종목 기본 타겟
   target?: TargetCode | null;
+  technique?: Technique | null; // §14 운동 방식 — 미지정/null = 일반 세트
   // §3.7B 세션 직접 귀속 — 지정 시 lazy 생성 생략, 그 세션에 직접 추가 (date 불일치 시 422)
   session_id?: number;
 }
@@ -227,6 +228,24 @@ export interface SetCreateRequest extends SaveSetInput {
   client_id: string; // UUID — 멱등 키 (§5.4)
 }
 
+// §14 운동 방식 — 세트 태그. 볼륨·PR 무관. null = 일반 세트
+export type Technique = "drop" | "superset" | "compound" | "giant" | "rest_pause";
+export const TECHNIQUES: Technique[] = ["drop", "superset", "compound", "giant", "rest_pause"];
+export const TECHNIQUE_NAMES_KO: Record<Technique, string> = {
+  drop: "드롭",
+  superset: "슈퍼세트",
+  compound: "컴파운드",
+  giant: "자이언트",
+  rest_pause: "레스트포즈",
+};
+export const TECHNIQUE_HINTS_KO: Record<Technique, string> = {
+  drop: "같은 종목, 중량을 낮추며 쉬지 않고 이어서",
+  superset: "다른 부위 두 종목을 쉬지 않고 번갈아",
+  compound: "같은 부위 두 종목을 쉬지 않고 이어서",
+  giant: "세 종목 이상을 쉬지 않고 연달아",
+  rest_pause: "실패 후 10~20초 쉬고 같은 중량으로 추가 반복",
+};
+
 export interface OutboxItem {
   client_id: string;
   date: string;
@@ -234,6 +253,7 @@ export interface OutboxItem {
   weight_kg: number;
   reps: number;
   is_warmup: boolean;
+  technique?: Technique | null;
   new_session: boolean;
   note?: string;
   // v1 큐 항목(intent_muscle)은 무시된다 — 서버가 종목 기본 타겟을 채운다
@@ -258,6 +278,7 @@ export interface WorkoutSet {
   is_e1rm_pr: boolean;
   target: TargetCode; // 항상 존재
   target_ko: string;
+  technique: Technique | null; // §14
 }
 
 export interface SetUpdateRequest {
@@ -265,6 +286,7 @@ export interface SetUpdateRequest {
   reps?: number;
   is_warmup?: boolean;
   target?: TargetCode | null; // null 전송 = 종목 기본 타겟으로 되돌리기
+  technique?: Technique | null; // §14 null 전송 = 일반 세트
 }
 
 // ---------- Sessions ----------
@@ -303,6 +325,7 @@ export interface SessionSetRecord {
   created_at: string;
   target: TargetCode;
   target_ko: string;
+  technique: Technique | null; // §14
 }
 
 export interface SessionExerciseGroup {

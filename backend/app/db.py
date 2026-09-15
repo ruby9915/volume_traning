@@ -1,7 +1,8 @@
 import logging
 import sqlite3
-from collections.abc import Iterator
 from pathlib import Path
+
+from fastapi import Request
 
 from .config import get_settings
 from .seed import seed, tags_to_text
@@ -203,7 +204,9 @@ CREATE TABLE IF NOT EXISTS workout_set (
     note        TEXT,
     created_at  TEXT NOT NULL DEFAULT (datetime('now')),
     -- §10.2 세트의 타겟 (앱이 항상 채운다 — NULL은 마이그레이션 중간 상태에서만)
-    target_id   INTEGER REFERENCES muscle_group(id)
+    target_id   INTEGER REFERENCES muscle_group(id),
+    -- §14 운동 방식 (드롭·슈퍼세트·컴파운드·자이언트·레스트포즈). NULL = 일반 세트. 볼륨 계산 무관.
+    technique   TEXT CHECK (technique IS NULL OR technique IN ('drop', 'superset', 'compound', 'giant', 'rest_pause'))
 );
 CREATE INDEX IF NOT EXISTS idx_set_session  ON workout_set(session_id);
 CREATE INDEX IF NOT EXISTS idx_set_exercise ON workout_set(exercise_id);
@@ -217,7 +220,7 @@ CREATE TABLE IF NOT EXISTS body_weight_log (
 );
 """
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 # v1 → v2 (§3.6): 당시 추가된 속성 6컬럼. v4에서 4개는 tags로 흡수·삭제된다.
 _V2_ATTR_COLUMNS = ("base_movement", "equipment", "support", "grip", "angle", "aliases")
@@ -269,6 +272,7 @@ def _migrate_structure(conn: sqlite3.Connection) -> int:
     v5→v6 (§10.4 내 머신): user_machine 테이블(DDL). 구조 변경 없음 — 데이터 단계(_apply_v6_data)가
       사용자가 이미 종목에 연결해 둔 머신을 내 머신으로 등록한다.
     v6→v7 (§13 프로필·친구): user.bio/avatar/share_with_friends ALTER, friendship 테이블(DDL). 데이터 단계 없음.
+    v7→v8 (§14 운동 방식): workout_set.technique ALTER. 데이터 단계 없음.
     """
     version = conn.execute("PRAGMA user_version").fetchone()[0]
     if version >= SCHEMA_VERSION:
@@ -349,6 +353,13 @@ def _migrate_structure(conn: sqlite3.Connection) -> int:
         conn.execute(
             "ALTER TABLE user ADD COLUMN share_with_friends INTEGER NOT NULL DEFAULT 1"
             " CHECK (share_with_friends IN (0,1))"
+        )
+
+    # v7→v8 (§14): 세트 운동 방식
+    if "technique" not in _columns(conn, "workout_set"):
+        conn.execute(
+            "ALTER TABLE workout_set ADD COLUMN technique TEXT CHECK (technique IS NULL OR"
+            " technique IN ('drop', 'superset', 'compound', 'giant', 'rest_pause'))"
         )
 
     if "user_id" not in _columns(conn, "body_weight_log"):
@@ -590,10 +601,16 @@ def init_db(db_path: str | None = None) -> list[str]:
         conn.close()
 
 
-def get_db() -> Iterator[sqlite3.Connection]:
-    conn = _connect(get_settings().DB_PATH)
-    try:
-        yield conn
-        conn.commit()
-    finally:
-        conn.close()
+def open_request_db() -> sqlite3.Connection:
+    """요청 단위 연결 — main.py의 db 미들웨어가 연다."""
+    return _connect(get_settings().DB_PATH)
+
+
+def get_db(request: Request) -> sqlite3.Connection:
+    """핸들러·의존성이 쓰는 요청 단위 연결 (미들웨어가 request.state.db에 넣어 둔 것).
+
+    예전에는 yield 의존성이 응답 뒤에 commit했는데, FastAPI 0.118+에서는 그 종료 코드가 응답을
+    보낸 *뒤*에 돌아 PATCH 직후의 재조회가 커밋 전 값을 읽는 경합이 있었다(§14 e2e에서 발견).
+    지금은 미들웨어가 응답을 돌려주기 전에 commit(오류 응답·예외는 rollback)한다.
+    """
+    return request.state.db

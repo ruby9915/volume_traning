@@ -297,6 +297,11 @@ class FavoritesReplace(StrictModel):
 
 # ---------- Sets ----------
 
+# §14 운동 방식 — 세트 단위 태그. 볼륨·PR 계산에는 영향 없음 (기록·표시·내보내기용)
+TECHNIQUES = ("drop", "superset", "compound", "giant", "rest_pause")
+Technique = Literal["drop", "superset", "compound", "giant", "rest_pause"]
+
+
 class SetCreate(StrictModel):
     client_id: Annotated[str, StringConstraints(min_length=1, max_length=64)]
     date: DateStr
@@ -304,6 +309,7 @@ class SetCreate(StrictModel):
     weight_kg: Weight = 0
     reps: Reps
     is_warmup: bool = False
+    technique: Technique | None = None
     new_session: bool = False
     # §10.2 세트 타겟 — 미지정/null = 종목 기본 타겟 (유효 code만, 위반 422)
     target: TargetCode | None = None
@@ -324,6 +330,8 @@ class SetUpdate(StrictModel):
     is_warmup: bool | None = None
     # §10.2 — 명시적 null = 종목 기본 타겟으로 되돌리기
     target: TargetCode | None = None
+    # §14 — 명시적 null = 일반 세트로 되돌리기
+    technique: Technique | None = None
 
 
 class SetOut(BaseModel):
@@ -343,6 +351,7 @@ class SetOut(BaseModel):
     # §10.2 세트 타겟 (항상 존재)
     target: str
     target_ko: str
+    technique: str | None = None  # §14
 
 
 # ---------- Sessions ----------
@@ -373,6 +382,7 @@ class SessionSetOut(BaseModel):
     created_at: str
     target: str
     target_ko: str
+    technique: str | None = None  # §14
 
 
 class SessionExerciseGroup(BaseModel):

@@ -10,6 +10,7 @@ import {
   fetchAdminUsers,
 } from "../api/client";
 import type { AdminUser, SessionSummary } from "../api/types";
+import { TECHNIQUE_NAMES_KO } from "../api/types";
 import Card from "../components/Card";
 import ErrorRetry from "../components/ErrorRetry";
 import Spinner from "../components/Spinner";
@@ -102,7 +103,7 @@ function SessionDetailView({ userId, session }: { userId: number; session: Sessi
           </div>
           <p className="mt-0.5 font-numeric text-sm text-muted">
             {g.sets
-              .map((s) => `${s.is_warmup ? "W " : ""}${s.weight_kg}×${s.reps}${s.target !== g.default_target ? `(${nameOf(s.target)})` : ""}`)
+              .map((s) => `${s.is_warmup ? "W " : ""}${s.technique ? `[${TECHNIQUE_NAMES_KO[s.technique]}] ` : ""}${s.weight_kg}×${s.reps}${s.target !== g.default_target ? `(${nameOf(s.target)})` : ""}`)
               .join(" · ")}
           </p>
         </div>

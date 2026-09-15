@@ -389,6 +389,7 @@ function postSet(item: OutboxItem): Promise<WorkoutSet> {
     note: item.note,
     // undefined면 JSON.stringify가 필드 자체를 생략 → 서버가 종목 기본 타겟 (v1 큐 항목 호환)
     target: item.target,
+    technique: item.technique ?? null,
     session_id: item.session_id,
   };
   return api("/api/sets", { method: "POST", body: JSON.stringify(payload) });
@@ -473,6 +474,7 @@ export async function saveSet(input: SaveSetInput): Promise<WorkoutSet | null> {
     new_session: input.new_session ?? false,
     note: input.note,
     target: input.target,
+    technique: input.technique ?? null,
     session_id: input.session_id,
     queued_at: new Date().toISOString(),
   };

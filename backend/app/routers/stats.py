@@ -630,7 +630,7 @@ def export_db(
 
 CSV_COLUMNS = [
     "date", "exercise_name_ko", "name_en", "set_index", "weight_kg",
-    "reps", "is_warmup", "volume_kg",
+    "reps", "is_warmup", "technique", "volume_kg",
     # §10.2 세트 타겟 3단계 (세부 코드 / 근육 코드 / 부위)
     "target", "target_muscle", "target_region", "note",
     # §10.3 계열·태그·머신
@@ -646,7 +646,7 @@ def export_csv(
         """
         SELECT sv.date AS date, e.name_ko AS name_ko, e.name_en AS name_en,
                ws.set_index AS set_index, ws.weight_kg AS weight_kg,
-               ws.reps AS reps, ws.is_warmup AS is_warmup,
+               ws.reps AS reps, ws.is_warmup AS is_warmup, ws.technique AS technique,
                sv.volume_kg AS volume_kg, ws.note AS note,
                e.base_movement AS base_movement, e.tags AS tags, m.name_ko AS machine,
                tp.code AS target, tp.muscle_code AS target_muscle, tp.region AS target_region
@@ -668,7 +668,7 @@ def export_csv(
         writer.writerow(
             [
                 r["date"], r["name_ko"], r["name_en"] or "", r["set_index"],
-                r["weight_kg"], r["reps"], r["is_warmup"], round(r["volume_kg"], 2),
+                r["weight_kg"], r["reps"], r["is_warmup"], r["technique"] or "", round(r["volume_kg"], 2),
                 r["target"] or "", r["target_muscle"] or "", r["target_region"] or "",
                 r["note"] or "",
                 r["base_movement"] or "", r["tags"] or "", r["machine"] or "",

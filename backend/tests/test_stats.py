@@ -336,10 +336,10 @@ def test_export_csv_bom_and_columns(auth_client, db):
     rows = list(csv.reader(io.StringIO(res.content.decode("utf-8-sig"))))
     assert rows[0] == CSV_COLUMNS
     assert rows[1] == [
-        "2026-06-01", "벤치프레스", "Barbell Bench Press", "1", "100.0", "10", "0", "1000.0",
+        "2026-06-01", "벤치프레스", "Barbell Bench Press", "1", "100.0", "10", "0", "", "1000.0",
         "mid_chest", "chest", "chest", "메모", "벤치프레스", "바벨,플랫", "",
     ]
-    assert rows[2][8:11] == ["hamstrings", "hamstrings", "legs"]
+    assert rows[2][9:12] == ["hamstrings", "hamstrings", "legs"]
 
 
 def test_export_csv_is_per_user(auth_client, user_client, db):

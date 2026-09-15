@@ -1,6 +1,7 @@
 // §13 친구 세션 읽기 전용 뷰 — 종목별 세트 나열만. 편집 화면(SessionDetail)의 조작은 전혀 없다.
 import { useQuery } from "@tanstack/react-query";
 import { fetchSession } from "../../api/client";
+import { TECHNIQUE_NAMES_KO } from "../../api/types";
 import { useTargets } from "../../hooks/useTargets";
 import { formatKoreanDate } from "../../utils/date";
 import { fmtInt } from "../../utils/format";
@@ -38,7 +39,7 @@ export default function ReadOnlySession({ sessionId, userId }: { sessionId: numb
             </div>
             <p className="mt-0.5 font-numeric text-sm text-muted">
               {g.sets
-                .map((x) => `${x.is_warmup ? "W " : ""}${x.weight_kg}×${x.reps}${x.target !== g.default_target ? `(${nameOf(x.target)})` : ""}`)
+                .map((x) => `${x.is_warmup ? "W " : ""}${x.technique ? `[${TECHNIQUE_NAMES_KO[x.technique]}] ` : ""}${x.weight_kg}×${x.reps}${x.target !== g.default_target ? `(${nameOf(x.target)})` : ""}`)
                 .join(" · ")}
             </p>
           </div>

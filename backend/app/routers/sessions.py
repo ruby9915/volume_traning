@@ -73,7 +73,7 @@ def _set_out(db: sqlite3.Connection, set_id: int) -> SetOut:
     row = db.execute(
         f"""
         SELECT ws.id, ws.client_id, ws.session_id, ws.exercise_id, ws.set_index,
-               ws.weight_kg, ws.reps, ws.is_warmup, ws.note, ws.created_at,
+               ws.weight_kg, ws.reps, ws.is_warmup, ws.note, ws.created_at, ws.technique,
                sv.volume_kg, sv.date, sv.user_id, {_TARGET_COLS}
         FROM workout_set ws
         JOIN set_volume sv ON sv.set_id = ws.id
@@ -169,10 +169,10 @@ def create_set(
         cur = db.execute(
             """
             INSERT INTO workout_set (client_id, session_id, exercise_id, set_index,
-                                     weight_kg, reps, is_warmup, target_id)
+                                     weight_kg, reps, is_warmup, target_id, technique)
             VALUES (?, ?, ?,
                     (SELECT COALESCE(MAX(set_index), 0) + 1 FROM workout_set WHERE session_id = ?),
-                    ?, ?, ?, ?)
+                    ?, ?, ?, ?, ?)
             """,
             (
                 body.client_id,
@@ -183,6 +183,7 @@ def create_set(
                 body.reps,
                 int(body.is_warmup),
                 target_id,
+                body.technique,
             ),
         )
     except sqlite3.IntegrityError:
@@ -352,7 +353,7 @@ def session_detail_for(db: sqlite3.Connection, user_id: int, session_id: int) ->
     rows = db.execute(
         f"""
         SELECT ws.id, ws.client_id, ws.exercise_id, ws.set_index, ws.weight_kg,
-               ws.reps, ws.is_warmup, ws.note, ws.created_at, sv.volume_kg, e.name_ko,
+               ws.reps, ws.is_warmup, ws.note, ws.created_at, ws.technique, sv.volume_kg, e.name_ko,
                dt.code AS exercise_default_target, {_TARGET_COLS}
         FROM workout_set ws
         JOIN set_volume sv ON sv.set_id = ws.id
@@ -387,6 +388,7 @@ def session_detail_for(db: sqlite3.Connection, user_id: int, session_id: int) ->
                 created_at=r["created_at"],
                 target=r["target"],
                 target_ko=r["target_ko"],
+                technique=r["technique"],
             )
         )
     return SessionDetail(

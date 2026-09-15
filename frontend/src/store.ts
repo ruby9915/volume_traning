@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import type { TargetCode } from "./api/types";
+import type { TargetCode, Technique } from "./api/types";
 import { todayStr } from "./utils/date";
 
 export type WeightStep = 1.25 | 2.5 | 5;
@@ -21,10 +21,11 @@ export interface StepperInput {
   weight_kg: number;
   reps: number;
   is_warmup: boolean;
+  technique: Technique | null; // §14 운동 방식 — 종목 카드 안에서 sticky, 종목 바꾸면 초기화
 }
 
 // 프리필 3순위는 "빈 값" (§5.3) — 임의 기본 중량 금지, 0에서 시작
-const DEFAULT_STEPPER: StepperInput = { weight_kg: 0, reps: 8, is_warmup: false };
+const DEFAULT_STEPPER: StepperInput = { weight_kg: 0, reps: 8, is_warmup: false, technique: null };
 
 interface AppState {
   activeExerciseId: number | null;

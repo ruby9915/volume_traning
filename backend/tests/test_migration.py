@@ -422,6 +422,26 @@ def test_migrate_v6_to_v7_adds_profile_columns_and_friendship(tmp_path, env):
         conn.close()
 
 
+def test_migrate_v7_to_v8_adds_technique_column(tmp_path, env):
+    """v7 DB(workout_set.technique 없음)를 열면 컬럼이 생기고 기존 세트는 NULL(일반 세트)."""
+    path = str(tmp_path / "v7.db")
+    init_db(path)
+    conn = _connect(path)
+    try:
+        conn.execute("ALTER TABLE workout_set DROP COLUMN technique")
+        conn.execute("PRAGMA user_version = 7")
+        conn.commit()
+    finally:
+        conn.close()
+    init_db(path)
+    conn = _connect(path)
+    try:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+        assert "technique" in {r[1] for r in conn.execute("PRAGMA table_info(workout_set)").fetchall()}
+    finally:
+        conn.close()
+
+
 def test_migration_idempotent_on_restart(tmp_path, env):
     path = str(tmp_path / "v3.db")
     _make_v3_db(path)
