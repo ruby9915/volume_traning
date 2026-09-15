@@ -18,6 +18,7 @@ import { useResolvedTheme } from "../../theme";
 import { formatShortDate } from "../../utils/date";
 import { fmtInt, fmtK, fmtKg1, fmtWeight } from "../../utils/format";
 import Card from "../Card";
+import Collapsible, { CollapseToggle, ContextToggle, useCollapseControl } from "../Collapsible";
 import ErrorRetry from "../ErrorRetry";
 import Spinner from "../Spinner";
 import TrendLineChart, { LINE_CHART_THEME } from "../charts/TrendLineChart";
@@ -28,11 +29,16 @@ const TREND_WEEKS = 16;
 
 // ---------- 공용 소품 ----------
 
-function CardTitle({ title, note }: { title: string; note?: string }) {
+/** 카드 제목 + 한 줄 설명. Collapsible 래퍼 안이면 접기 버튼을 제목 줄 오른쪽에 그린다 (toggle="none"이면 호출측이 ContextToggle 배치). */
+function CardTitle({ title, note, toggle = "auto" }: { title: string; note?: string; toggle?: "auto" | "none" }) {
+  const ctl = useCollapseControl();
   return (
-    <div className="mb-3 flex items-baseline gap-1.5">
-      <h2 className="text-[15px] font-bold">{title}</h2>
-      {note && <span className="text-[11px] text-muted">· {note}</span>}
+    <div className="mb-3 flex items-baseline justify-between gap-2">
+      <div className="flex min-w-0 flex-wrap items-baseline gap-1.5">
+        <h2 className="text-[15px] font-bold">{title}</h2>
+        {note && <span className="text-[11px] text-muted">· {note}</span>}
+      </div>
+      {ctl && toggle === "auto" ? <CollapseToggle collapsed={ctl.collapsed} onToggle={ctl.toggle} /> : null}
     </div>
   );
 }
@@ -171,15 +177,18 @@ function FrequencyCard() {
   return (
     <Card>
       <div className="mb-1 flex items-baseline justify-between gap-2">
-        <CardTitle title="분할 실행 점검" note={`${FREQUENCY_WEEKS}주 · 주별 세션 수`} />
-        <Segmented
-          value={level}
-          onChange={setLevel}
-          options={[
-            { key: "region", label: "부위" },
-            { key: "muscle", label: "근육" },
-          ]}
-        />
+        <CardTitle title="분할 실행 점검" note={`${FREQUENCY_WEEKS}주 · 주별 세션 수`} toggle="none" />
+        <div className="flex items-center gap-1">
+          <Segmented
+            value={level}
+            onChange={setLevel}
+            options={[
+              { key: "region", label: "부위" },
+              { key: "muscle", label: "근육" },
+            ]}
+          />
+          <ContextToggle />
+        </div>
       </div>
       <Status
         q={q}
@@ -358,15 +367,18 @@ function AttributionCard({
   return (
     <Card className={q.isPlaceholderData ? "opacity-60" : ""}>
       <div className="mb-1 flex items-baseline justify-between gap-2">
-        <CardTitle title="관여 근육 분배" note={`${rangeNote} · 간접 ×${weight}`} />
-        <Segmented
-          value={unit}
-          onChange={setUnit}
-          options={[
-            { key: "sets", label: "세트" },
-            { key: "volume", label: "볼륨" },
-          ]}
-        />
+        <CardTitle title="관여 근육 분배" note={`${rangeNote} · 간접 ×${weight}`} toggle="none" />
+        <div className="flex items-center gap-1">
+          <Segmented
+            value={unit}
+            onChange={setUnit}
+            options={[
+              { key: "sets", label: "세트" },
+              { key: "volume", label: "볼륨" },
+            ]}
+          />
+          <ContextToggle />
+        </div>
       </div>
       <Status
         q={q}
@@ -627,12 +639,24 @@ export default function AdvancedAnalytics({
         <h2 className="text-[12px] font-bold tracking-wide text-muted uppercase">고급 분석</h2>
         <span className="text-[11px] text-faint">· 훈련 {gate.weeks_of_data}주</span>
       </div>
-      <FrequencyCard />
-      <TrendCard />
-      <AttributionCard from={from} includeWarmup={includeWarmup} rangeNote={rangeNote} />
-      <RepMaxCard exerciseId={exerciseId} />
-      <FatigueCard exerciseId={exerciseId} from={from} rangeNote={rangeNote} />
-      <IntensityCard from={from} rangeNote={rangeNote} />
+      <Collapsible id="adv-frequency" title="분할 실행 점검" note={`${FREQUENCY_WEEKS}주 · 주별 세션 수`}>
+        <FrequencyCard />
+      </Collapsible>
+      <Collapsible id="adv-trend" title="볼륨 추세" note={`${TREND_WEEKS}주 · 웜업 제외`}>
+        <TrendCard />
+      </Collapsible>
+      <Collapsible id="adv-attribution" title="관여 근육 분배" note="간접 볼륨 포함">
+        <AttributionCard from={from} includeWarmup={includeWarmup} rangeNote={rangeNote} />
+      </Collapsible>
+      <Collapsible id="adv-repmax" title="rep-max 매트릭스" note="선택 종목 · 전체 기간">
+        <RepMaxCard exerciseId={exerciseId} />
+      </Collapsible>
+      <Collapsible id="adv-fatigue" title="세트 내 피로 곡선" note="선택 종목">
+        <FatigueCard exerciseId={exerciseId} from={from} rangeNote={rangeNote} />
+      </Collapsible>
+      <Collapsible id="adv-intensity" title="강도 존 분포" note="전 종목 · %e1RM">
+        <IntensityCard from={from} rangeNote={rangeNote} />
+      </Collapsible>
     </>
   );
 }

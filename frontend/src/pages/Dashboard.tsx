@@ -21,7 +21,8 @@ import Spinner from "../components/Spinner";
 import TrendLineChart, { LINE_CHART_THEME } from "../components/charts/TrendLineChart";
 import AdvancedAnalytics from "../components/dashboard/AdvancedAnalytics";
 import { useSubject } from "../subject";
-import { collapseLabel, useCollapsed } from "../hooks/useCollapsed";
+import { useCollapsed } from "../hooks/useCollapsed";
+import Collapsible, { CollapseToggle, ContextToggle, useCollapseControl } from "../components/Collapsible";
 
 type PeriodMode = "weekly" | "monthly";
 /** §10.2 부위별 분배 드릴다운 단계 — 부위(6) → 근육 → 세부 */
@@ -75,28 +76,25 @@ function CardTitle({
   note,
   collapsed,
   onToggle,
+  toggle = "auto",
 }: {
   title: string;
   note?: string;
   collapsed?: boolean;
   onToggle?: () => void;
+  /** auto = Collapsible 래퍼 안이면 접기 버튼을 제목 옆에 그린다. none = 호출측이 ContextToggle을 따로 둔다 */
+  toggle?: "auto" | "none";
 }) {
+  const ctl = useCollapseControl();
+  const isCollapsed = collapsed ?? ctl?.collapsed ?? false;
+  const handle = onToggle ?? (toggle === "auto" ? ctl?.toggle : undefined);
   return (
-    <div className={`flex items-baseline justify-between gap-2 ${collapsed ? "mb-0" : "mb-4"}`}>
+    <div className={`flex items-baseline justify-between gap-2 ${isCollapsed ? "mb-0" : "mb-4"}`}>
       <div className="flex min-w-0 flex-wrap items-baseline gap-1.5">
         <h2 className="text-[15px] font-bold">{title}</h2>
         {note && <span className="text-[11px] text-muted">· {note}</span>}
       </div>
-      {onToggle ? (
-        <button
-          type="button"
-          onClick={onToggle}
-          aria-expanded={!collapsed}
-          className="touch-target -my-2 -mr-2 shrink-0 px-2 text-xs font-semibold text-muted active:text-text"
-        >
-          {collapseLabel(collapsed ?? false)}
-        </button>
-      ) : null}
+      {handle ? <CollapseToggle collapsed={isCollapsed} onToggle={handle} /> : null}
     </div>
   );
 }
@@ -438,10 +436,12 @@ export default function Dashboard() {
         </p>
 
         {/* 부위별 분배 — 타겟 100% 귀속, 부위 → 근육 → 세부 드릴다운 */}
+        <Collapsible id="distribution" title="부위별 분배" note="타겟 부위별 볼륨 비율">
         <Card className={musclesQ.isPlaceholderData ? "opacity-60" : ""}>
           <div className="mb-3 flex items-baseline justify-between gap-2">
-            <CardTitle title="부위별 분배" note={`${rangeNote} · 타겟 부위별 볼륨 비율`} />
-            <div className="-mt-4 flex rounded-full bg-well p-0.5 dark:rounded-[7px]">
+            <CardTitle title="부위별 분배" note={`${rangeNote} · 타겟 부위별 볼륨 비율`} toggle="none" />
+            <div className="-mt-4 flex items-center gap-1">
+            <div className="flex rounded-full bg-well p-0.5 dark:rounded-[7px]">
               {DIST_LEVELS.map((l) => (
                 <button
                   key={l.key}
@@ -454,6 +454,8 @@ export default function Dashboard() {
                   {l.label}
                 </button>
               ))}
+            </div>
+            <ContextToggle />
             </div>
           </div>
           {musclesQ.isPending ? (
@@ -484,6 +486,7 @@ export default function Dashboard() {
             </div>
           )}
         </Card>
+        </Collapsible>
 
         {/* 최근 PR — 종목명 + 종류·날짜 캡션 + 기록값 */}
         <Card>
@@ -523,6 +526,7 @@ export default function Dashboard() {
         </Card>
 
         {/* 종목별 진행 — §3.6: 계열 합산 항목 추가 */}
+        <Collapsible id="progress" title="종목별 진행" note="날짜별 볼륨과 최고 e1RM 추이">
         <Card
           className={
             (familyBase !== null ? familyQ.isPlaceholderData : exerciseQ.isPlaceholderData)
@@ -650,6 +654,7 @@ export default function Dashboard() {
             </>
           )}
         </Card>
+        </Collapsible>
 
         {/* §11 고급 분석 — 4주 이상 기록된 사용자에게만 열린다 (그 전엔 잠금 카드) */}
         <AdvancedAnalytics
