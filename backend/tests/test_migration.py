@@ -379,6 +379,49 @@ def test_migrate_v5_to_v6_backfills_user_machines(tmp_path, env):
         conn.close()
 
 
+def test_migrate_v6_to_v7_adds_profile_columns_and_friendship(tmp_path, env):
+    """v6 DB(프로필 컬럼·friendship 없음)를 열면 컬럼이 생기고(기본 공개=1) 테이블이 만들어진다."""
+    path = str(tmp_path / "v6.db")
+    init_db(path)
+    conn = _connect(path)
+    try:
+        # CHECK 제약이 걸린 컬럼은 DROP COLUMN이 안 되므로 v6 모양의 user 테이블로 재구축
+        conn.execute("PRAGMA foreign_keys = OFF")
+        conn.execute(
+            """
+            CREATE TABLE user_v6 (
+                id            INTEGER PRIMARY KEY,
+                username      TEXT    NOT NULL UNIQUE,
+                password_hash TEXT    NOT NULL,
+                display_name  TEXT    NOT NULL,
+                is_admin      INTEGER NOT NULL DEFAULT 0,
+                created_at    TEXT    NOT NULL DEFAULT (datetime('now'))
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO user_v6 SELECT id, username, password_hash, display_name, is_admin, created_at FROM user"
+        )
+        conn.execute("DROP TABLE user")
+        conn.execute("ALTER TABLE user_v6 RENAME TO user")
+        conn.execute("DROP TABLE friendship")
+        conn.execute("PRAGMA user_version = 6")
+        conn.commit()
+    finally:
+        conn.close()
+
+    init_db(path)
+    conn = _connect(path)
+    try:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(user)").fetchall()}
+        assert {"bio", "avatar", "share_with_friends"} <= cols
+        assert conn.execute("SELECT share_with_friends FROM user LIMIT 1").fetchone()[0] == 1
+        assert conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'friendship'").fetchone()
+    finally:
+        conn.close()
+
+
 def test_migration_idempotent_on_restart(tmp_path, env):
     path = str(tmp_path / "v3.db")
     _make_v3_db(path)

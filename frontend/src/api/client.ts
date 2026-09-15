@@ -14,6 +14,8 @@ import type {
   ExerciseStats,
   ExerciseUpdateRequest,
   FamilyStats,
+  FriendUser,
+  FriendsOut,
   FatigueStats,
   BrandCount,
   Favorites,
@@ -28,6 +30,8 @@ import type {
   OutboxItem,
   PasswordChangeRequest,
   PrStats,
+  Profile,
+  ProfileUpdateRequest,
   RangeParams,
   RegisterRequest,
   RepMaxStats,
@@ -238,6 +242,7 @@ export function fetchMachines(params: MachineSearchParams = {}): Promise<Machine
   const sp = new URLSearchParams();
   if (params.q) sp.set("q", params.q);
   if (params.brand) sp.set("brand", params.brand);
+  if (params.region) sp.set("region", params.region);
   if (params.limit) sp.set("limit", String(params.limit));
   const qs = sp.toString();
   return api(`/api/machines${qs ? `?${qs}` : ""}`);
@@ -505,8 +510,8 @@ export function fetchSessions(params: SessionListParams = {}): Promise<SessionSu
   return api(`/api/sessions${qs({ ...params })}`);
 }
 
-export function fetchSession(id: number): Promise<SessionDetail> {
-  return api(`/api/sessions/${id}`);
+export function fetchSession(id: number, userId?: number): Promise<SessionDetail> {
+  return api(`/api/sessions/${id}${qs({ user_id: userId })}`);
 }
 
 export function updateSession(id: number, body: SessionUpdateRequest): Promise<SessionSummary> {
@@ -517,8 +522,8 @@ export function deleteSession(id: number): Promise<void> {
   return api(`/api/sessions/${id}`, { method: "DELETE" });
 }
 
-export function fetchBodyweight(limit?: number): Promise<BodyWeightEntry[]> {
-  return api(`/api/bodyweight${qs({ limit })}`);
+export function fetchBodyweight(limit?: number, userId?: number): Promise<BodyWeightEntry[]> {
+  return api(`/api/bodyweight${qs({ limit, user_id: userId })}`);
 }
 
 export function saveBodyweight(body: BodyWeightCreateRequest): Promise<BodyWeightEntry> {
@@ -527,8 +532,9 @@ export function saveBodyweight(body: BodyWeightCreateRequest): Promise<BodyWeigh
 
 // ---------- Stats ----------
 
-export function fetchStatsSummary(): Promise<StatsSummary> {
-  return api("/api/stats/summary");
+// 조회 함수의 userId(§13): 친구의 데이터를 볼 때 user_id로 붙는다. 내 것이면 undefined.
+export function fetchStatsSummary(userId?: number): Promise<StatsSummary> {
+  return api(`/api/stats/summary${qs({ user_id: userId })}`);
 }
 
 export function fetchStatsVolume(params: VolumeStatsParams): Promise<VolumeStats> {
@@ -543,39 +549,42 @@ export function fetchStatsExercise(id: number, params: RangeParams = {}): Promis
   return api(`/api/stats/exercises/${id}${qs({ ...params })}`);
 }
 
-export function fetchStatsPrs(): Promise<PrStats> {
-  return api("/api/stats/prs");
+export function fetchStatsPrs(userId?: number): Promise<PrStats> {
+  return api(`/api/stats/prs${qs({ user_id: userId })}`);
 }
 
 // §3.6 계열 합산 — 같은 base_movement 종목들의 날짜별 합산 볼륨 + 최고 e1RM
-export function fetchFamily(baseMovement: string): Promise<FamilyStats> {
-  return api(`/api/stats/family${qs({ base_movement: baseMovement })}`);
+export function fetchFamily(baseMovement: string, userId?: number): Promise<FamilyStats> {
+  return api(`/api/stats/family${qs({ base_movement: baseMovement, user_id: userId })}`);
 }
 
-export function fetchStatsCalendar(months = 6): Promise<CalendarStats> {
-  return api(`/api/stats/calendar${qs({ months })}`);
+export function fetchStatsCalendar(months = 6, userId?: number): Promise<CalendarStats> {
+  return api(`/api/stats/calendar${qs({ months, user_id: userId })}`);
 }
 
 // ---------- Advanced analytics (§11) — 4주 미만이면 403 insufficient_data ----------
 
-export function fetchAdvancedFrequency(weeks = 8): Promise<AdvancedFrequency> {
-  return api(`/api/stats/advanced/frequency${qs({ weeks })}`);
+export function fetchAdvancedFrequency(weeks = 8, userId?: number): Promise<AdvancedFrequency> {
+  return api(`/api/stats/advanced/frequency${qs({ weeks, user_id: userId })}`);
 }
 
-export function fetchAdvancedTrend(weeks = 16): Promise<TrendStats> {
-  return api(`/api/stats/advanced/trend${qs({ weeks })}`);
+export function fetchAdvancedTrend(weeks = 16, userId?: number): Promise<TrendStats> {
+  return api(`/api/stats/advanced/trend${qs({ weeks, user_id: userId })}`);
 }
 
-export function fetchRepMax(exerciseId: number): Promise<RepMaxStats> {
-  return api(`/api/stats/advanced/rep-max${qs({ exercise_id: exerciseId })}`);
+export function fetchRepMax(exerciseId: number, userId?: number): Promise<RepMaxStats> {
+  return api(`/api/stats/advanced/rep-max${qs({ exercise_id: exerciseId, user_id: userId })}`);
 }
 
-export function fetchFatigue(exerciseId: number, params: { from?: string; to?: string } = {}): Promise<FatigueStats> {
+export function fetchFatigue(
+  exerciseId: number,
+  params: { from?: string; to?: string; user_id?: number } = {},
+): Promise<FatigueStats> {
   return api(`/api/stats/advanced/fatigue${qs({ exercise_id: exerciseId, ...params })}`);
 }
 
 export function fetchIntensity(
-  params: { exercise_id?: number; from?: string; to?: string } = {},
+  params: { exercise_id?: number; from?: string; to?: string; user_id?: number } = {},
 ): Promise<IntensityStats> {
   return api(`/api/stats/advanced/intensity${qs({ ...params })}`);
 }
@@ -584,6 +593,40 @@ export function fetchAttribution(
   params: RangeParams & { indirect_weight?: number } = {},
 ): Promise<AttributionStats> {
   return api(`/api/stats/advanced/attribution${qs({ ...params })}`);
+}
+
+// ---------- 프로필·친구 (§13) ----------
+
+export function fetchProfile(username: string): Promise<Profile> {
+  return api(`/api/profile/${encodeURIComponent(username)}`);
+}
+
+export function updateProfile(body: ProfileUpdateRequest): Promise<User> {
+  return api("/api/me/profile", { method: "PATCH", body: JSON.stringify(body) });
+}
+
+export function searchUsers(q: string): Promise<FriendUser[]> {
+  return api(`/api/users/search${qs({ q })}`);
+}
+
+export function fetchFriends(): Promise<FriendsOut> {
+  return api("/api/friends");
+}
+
+export function requestFriend(username: string): Promise<FriendsOut> {
+  return api("/api/friends/requests", { method: "POST", body: JSON.stringify({ username }) });
+}
+
+export function acceptFriendRequest(requestId: number): Promise<FriendsOut> {
+  return api(`/api/friends/requests/${requestId}/accept`, { method: "POST" });
+}
+
+export function declineFriendRequest(requestId: number): Promise<FriendsOut> {
+  return api(`/api/friends/requests/${requestId}/decline`, { method: "POST" });
+}
+
+export function removeFriend(userId: number): Promise<FriendsOut> {
+  return api(`/api/friends/${userId}`, { method: "DELETE" });
 }
 
 // ---------- Admin (§10.5) ----------

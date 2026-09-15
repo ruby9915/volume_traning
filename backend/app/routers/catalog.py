@@ -51,18 +51,23 @@ def _like_escape(s: str) -> str:
 def list_machines(
     q: str | None = Query(None, max_length=80),
     brand: str | None = Query(None, max_length=50),
+    region: str | None = Query(None, max_length=20),
     limit: int | None = Query(None, ge=1, le=500),
     db: sqlite3.Connection = Depends(get_db),
 ) -> list[MachineOut]:
     """아카이브 검색 (§10.4). 파라미터 없으면 전체.
 
     q는 공백 단위 토큰을 모두 포함해야 매치 (브랜드·모델·한글 별칭 합친 문자열, 대소문자 무시).
+    region은 기본 타겟의 부위(chest/back/…) — 타겟 없는 랙·벤치는 부위 필터에 안 잡힌다.
     """
     where: list[str] = []
     params: list[str] = []
     if brand:
         where.append("m.brand = ?")
         params.append(brand)
+    if region:
+        where.append("t.region = ?")
+        params.append(region)
     for tok in (q or "").split():
         where.append("(m.brand || ' ' || m.model || ' ' || m.name_ko) LIKE ? ESCAPE '\\'")
         params.append(f"%{_like_escape(tok)}%")

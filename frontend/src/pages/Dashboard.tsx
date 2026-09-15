@@ -14,11 +14,13 @@ import type { Region, VolumePoint } from "../api/types";
 import { addDays, formatKoreanDate, formatShortDate, todayStr, weekStartStr } from "../utils/date";
 import { fmtInt, fmtK, fmtKg1 } from "../utils/format";
 import { useResolvedTheme } from "../theme";
+import AnalysisTabs from "../components/AnalysisTabs";
 import Card from "../components/Card";
 import ErrorRetry from "../components/ErrorRetry";
 import Spinner from "../components/Spinner";
 import TrendLineChart, { LINE_CHART_THEME } from "../components/charts/TrendLineChart";
 import AdvancedAnalytics from "../components/dashboard/AdvancedAnalytics";
+import { useSubject } from "../subject";
 
 type PeriodMode = "weekly" | "monthly";
 /** §10.2 부위별 분배 드릴다운 단계 — 부위(6) → 근육 → 세부 */
@@ -156,25 +158,26 @@ export default function Dashboard() {
   const [distLevel, setDistLevel] = useState<DistLevel>("region");
   const theme = useResolvedTheme();
   const lineTheme = LINE_CHART_THEME[theme];
+  const { userId, subject } = useSubject(); // §13 친구 열람이면 그 사용자, 아니면 undefined(나)
 
   const today = todayStr();
   const periods = useMemo(() => buildPeriods(mode, today), [mode, today]);
   const from = mode === "weekly" ? periods[0] : `${periods[0]}-01`;
   const warmupParam = includeWarmup ? { include_warmup: true } : {};
 
-  const summaryQ = useQuery({ queryKey: ["stats", "summary"], queryFn: fetchStatsSummary });
+  const summaryQ = useQuery({ queryKey: ["stats", "summary", userId], queryFn: () => fetchStatsSummary(userId) });
   const volumeQ = useQuery({
-    queryKey: ["stats", "volume", mode, includeWarmup],
+    queryKey: ["stats", "volume", mode, includeWarmup, userId],
     queryFn: () =>
-      fetchStatsVolume({ granularity: mode === "weekly" ? "week" : "month", from, ...warmupParam }),
+      fetchStatsVolume({ granularity: mode === "weekly" ? "week" : "month", from, ...warmupParam, user_id: userId }),
     placeholderData: keepPreviousData,
   });
   const musclesQ = useQuery({
-    queryKey: ["stats", "muscles", mode, includeWarmup],
-    queryFn: () => fetchStatsMuscles({ from, ...warmupParam }),
+    queryKey: ["stats", "muscles", mode, includeWarmup, userId],
+    queryFn: () => fetchStatsMuscles({ from, ...warmupParam, user_id: userId }),
     placeholderData: keepPreviousData,
   });
-  const prsQ = useQuery({ queryKey: ["stats", "prs"], queryFn: fetchStatsPrs });
+  const prsQ = useQuery({ queryKey: ["stats", "prs", userId], queryFn: () => fetchStatsPrs(userId) });
 
   // 기본값: 첫 PR 종목. 계열 선택 중에는 단일 종목 쿼리를 끈다.
   const familyBase = selection?.kind === "family" ? selection.base : null;
@@ -185,8 +188,8 @@ export default function Dashboard() {
         ? selection.id
         : null;
   const exerciseQ = useQuery({
-    queryKey: ["stats", "exercise", exerciseId, mode, includeWarmup],
-    queryFn: () => fetchStatsExercise(exerciseId!, { from, ...warmupParam }),
+    queryKey: ["stats", "exercise", exerciseId, mode, includeWarmup, userId],
+    queryFn: () => fetchStatsExercise(exerciseId!, { from, ...warmupParam, user_id: userId }),
     enabled: exerciseId !== null,
     placeholderData: keepPreviousData,
   });
@@ -205,8 +208,8 @@ export default function Dashboard() {
   }, [exercisesQ.data]);
 
   const familyQ = useQuery({
-    queryKey: ["stats", "family", familyBase],
-    queryFn: () => fetchFamily(familyBase!),
+    queryKey: ["stats", "family", familyBase, userId],
+    queryFn: () => fetchFamily(familyBase!, userId),
     enabled: familyBase !== null,
     placeholderData: keepPreviousData,
   });
@@ -303,12 +306,13 @@ export default function Dashboard() {
 
   return (
     <main className="mx-auto max-w-[720px] px-[18px] pt-4 pb-6">
+      <AnalysisTabs />
       {/* 헤더: 다크 = "ANALYTICS" 레터스페이싱 타이틀 / 라이트 = "분석" */}
       <div className="flex items-center justify-between">
         <h1 className="hidden font-numeric text-[13px] font-medium tracking-[3px] text-muted dark:block">
           ANALYTICS
         </h1>
-        <h1 className="text-[19px] font-extrabold dark:hidden">분석</h1>
+        <h1 className="text-[19px] font-extrabold dark:hidden">{subject ? `${subject.displayName}의 분석` : "분석"}</h1>
         <div className="flex rounded-full bg-surface p-1 shadow-card dark:rounded-[9px] dark:p-0.5">
           {(["weekly", "monthly"] as const).map((m) => (
             <button

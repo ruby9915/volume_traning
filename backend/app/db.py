@@ -97,7 +97,23 @@ CREATE TABLE IF NOT EXISTS user (
     password_hash TEXT    NOT NULL,
     display_name  TEXT    NOT NULL,
     is_admin      INTEGER NOT NULL DEFAULT 0 CHECK (is_admin IN (0,1)),
-    created_at    TEXT    NOT NULL DEFAULT (datetime('now'))
+    created_at    TEXT    NOT NULL DEFAULT (datetime('now')),
+    -- §13 프로필: 한 줄 소개, 아바타(이모지 등 짧은 문자열; NULL = 이니셜), 친구에게 기록 공개
+    bio               TEXT,
+    avatar            TEXT,
+    share_with_friends INTEGER NOT NULL DEFAULT 1 CHECK (share_with_friends IN (0,1))
+);
+
+-- §13 친구: 요청(pending) → 수락(accepted). 수락된 관계는 양방향. 거절·끊기는 행 삭제.
+CREATE TABLE IF NOT EXISTS friendship (
+    id           INTEGER PRIMARY KEY,
+    requester_id INTEGER NOT NULL REFERENCES user(id) ON DELETE CASCADE,
+    addressee_id INTEGER NOT NULL REFERENCES user(id) ON DELETE CASCADE,
+    status       TEXT    NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'accepted')),
+    created_at   TEXT    NOT NULL DEFAULT (datetime('now')),
+    responded_at TEXT,
+    UNIQUE (requester_id, addressee_id),
+    CHECK (requester_id != addressee_id)
 );
 
 CREATE TABLE IF NOT EXISTS muscle_group (
@@ -201,7 +217,7 @@ CREATE TABLE IF NOT EXISTS body_weight_log (
 );
 """
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 # v1 → v2 (§3.6): 당시 추가된 속성 6컬럼. v4에서 4개는 tags로 흡수·삭제된다.
 _V2_ATTR_COLUMNS = ("base_movement", "equipment", "support", "grip", "angle", "aliases")
@@ -252,6 +268,7 @@ def _migrate_structure(conn: sqlite3.Connection) -> int:
       데이터 단계(_apply_v5_data)가 내장 종목의 보조 근육을 시드로 채운다.
     v5→v6 (§10.4 내 머신): user_machine 테이블(DDL). 구조 변경 없음 — 데이터 단계(_apply_v6_data)가
       사용자가 이미 종목에 연결해 둔 머신을 내 머신으로 등록한다.
+    v6→v7 (§13 프로필·친구): user.bio/avatar/share_with_friends ALTER, friendship 테이블(DDL). 데이터 단계 없음.
     """
     version = conn.execute("PRAGMA user_version").fetchone()[0]
     if version >= SCHEMA_VERSION:
@@ -321,6 +338,18 @@ def _migrate_structure(conn: sqlite3.Connection) -> int:
 
     if "user_id" not in _columns(conn, "workout_session"):
         conn.execute("ALTER TABLE workout_session ADD COLUMN user_id INTEGER REFERENCES user(id)")
+
+    # v6→v7 (§13): 프로필 컬럼. 신규 DB는 DDL이 이미 갖고 있어 건너뛴다.
+    ucols = _columns(conn, "user")
+    if "bio" not in ucols:
+        conn.execute("ALTER TABLE user ADD COLUMN bio TEXT")
+    if "avatar" not in ucols:
+        conn.execute("ALTER TABLE user ADD COLUMN avatar TEXT")
+    if "share_with_friends" not in ucols:
+        conn.execute(
+            "ALTER TABLE user ADD COLUMN share_with_friends INTEGER NOT NULL DEFAULT 1"
+            " CHECK (share_with_friends IN (0,1))"
+        )
 
     if "user_id" not in _columns(conn, "body_weight_log"):
         # UNIQUE(date) → UNIQUE(user_id, date): 제약 변경은 테이블 재구축이 정석

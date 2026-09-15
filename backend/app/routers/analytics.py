@@ -13,7 +13,7 @@ from datetime import date, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from ..auth import CurrentUser, require_auth
+from ..auth import CurrentUser, subject_user
 from ..db import E1RM_EXPR, get_db
 from ..schemas import (
     DATE_PATTERN,
@@ -61,7 +61,7 @@ INTENSITY_ZONES: tuple[tuple[str, float, float], ...] = (
 
 
 def require_analytics_ready(
-    user: CurrentUser = Depends(require_auth), db: sqlite3.Connection = Depends(get_db)
+    user: CurrentUser = Depends(subject_user), db: sqlite3.Connection = Depends(get_db)
 ) -> CurrentUser:
     weeks = training_weeks(db, user.id)
     if weeks < ADVANCED_MIN_WEEKS:
@@ -117,7 +117,7 @@ def _bucket_shares(
 @router.get("/frequency", response_model=FrequencyOut)
 def frequency(
     weeks: int = Query(default=8, ge=1, le=26),
-    user: CurrentUser = Depends(require_auth),
+    user: CurrentUser = Depends(subject_user),
     db: sqlite3.Connection = Depends(get_db),
 ) -> FrequencyOut:
     """근육(level 2)·부위마다 주별 '그 부위를 자극한 세션 수' (웜업 제외).
@@ -186,7 +186,7 @@ def frequency(
 @router.get("/trend", response_model=TrendOut)
 def trend(
     weeks: int = Query(default=16, ge=4, le=52),
-    user: CurrentUser = Depends(require_auth),
+    user: CurrentUser = Depends(subject_user),
     db: sqlite3.Connection = Depends(get_db),
 ) -> TrendOut:
     """ma4 = 이번 주 포함 4주 평균, acwr = 이번 주 / 직전 4주 평균 (§6.2-A v2).
@@ -242,7 +242,7 @@ def trend(
 @router.get("/rep-max", response_model=RepMaxOut)
 def rep_max(
     exercise_id: int = Query(),
-    user: CurrentUser = Depends(require_auth),
+    user: CurrentUser = Depends(subject_user),
     db: sqlite3.Connection = Depends(get_db),
 ) -> RepMaxOut:
     """횟수별 최고 중량 (정확히 그 횟수 / 그 횟수 이상), Rep PR = 같은 중량으로 이전 세션보다
@@ -307,7 +307,7 @@ def fatigue(
     exercise_id: int = Query(),
     from_: str | None = Query(default=None, alias="from", pattern=DATE_PATTERN),
     to: str | None = Query(default=None, pattern=DATE_PATTERN),
-    user: CurrentUser = Depends(require_auth),
+    user: CurrentUser = Depends(subject_user),
     db: sqlite3.Connection = Depends(get_db),
 ) -> FatigueOut:
     """세션 안에서 그 종목의 n번째 워킹 세트가 평균 몇 회였는지 (1세트 대비 비율 포함).
@@ -362,7 +362,7 @@ def intensity(
     exercise_id: int | None = Query(default=None),
     from_: str | None = Query(default=None, alias="from", pattern=DATE_PATTERN),
     to: str | None = Query(default=None, pattern=DATE_PATTERN),
-    user: CurrentUser = Depends(require_auth),
+    user: CurrentUser = Depends(subject_user),
     db: sqlite3.Connection = Depends(get_db),
 ) -> IntensityOut:
     """세트 강도 = weight ÷ (그 시점까지 그 종목의 최고 e1RM) × 100. 러닝 최고치라 과거 세트를 지금
@@ -410,7 +410,7 @@ def attribution(
     to: str | None = Query(default=None, pattern=DATE_PATTERN),
     include_warmup: bool = False,
     indirect_weight: float = Query(default=INDIRECT_WEIGHT_DEFAULT, ge=0, le=1),
-    user: CurrentUser = Depends(require_auth),
+    user: CurrentUser = Depends(subject_user),
     db: sqlite3.Connection = Depends(get_db),
 ) -> AttributionOut:
     """근육(level 2)별 직접 세트/볼륨(§10.2 정본, /stats/muscles와 동일) + 간접 세트/볼륨(set_indirect).

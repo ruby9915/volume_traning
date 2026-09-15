@@ -13,6 +13,7 @@ import {
 } from "../../api/client";
 import type { AnalyticsGate, BucketShare, MuscleWeekFrequency } from "../../api/types";
 import { useAppStore } from "../../store";
+import { useSubject } from "../../subject";
 import { useResolvedTheme } from "../../theme";
 import { formatShortDate } from "../../utils/date";
 import { fmtInt, fmtK, fmtKg1, fmtWeight } from "../../utils/format";
@@ -162,9 +163,10 @@ function cellColor(n: number): string {
 
 function FrequencyCard() {
   const [level, setLevel] = useState<"region" | "muscle">("region");
+  const { userId } = useSubject();
   const q = useQuery({
-    queryKey: ["stats", "advanced", "frequency", FREQUENCY_WEEKS],
-    queryFn: () => fetchAdvancedFrequency(FREQUENCY_WEEKS),
+    queryKey: ["stats", "advanced", "frequency", FREQUENCY_WEEKS, userId],
+    queryFn: () => fetchAdvancedFrequency(FREQUENCY_WEEKS, userId),
   });
   return (
     <Card>
@@ -250,9 +252,10 @@ function FrequencyCard() {
 
 function TrendCard() {
   const lineTheme = LINE_CHART_THEME[useResolvedTheme()];
+  const { userId } = useSubject();
   const q = useQuery({
-    queryKey: ["stats", "advanced", "trend", TREND_WEEKS],
-    queryFn: () => fetchAdvancedTrend(TREND_WEEKS),
+    queryKey: ["stats", "advanced", "trend", TREND_WEEKS, userId],
+    queryFn: () => fetchAdvancedTrend(TREND_WEEKS, userId),
   });
   return (
     <Card>
@@ -340,13 +343,15 @@ function AttributionCard({
 }) {
   const weight = useAppStore((s) => s.indirectWeight);
   const [unit, setUnit] = useState<"sets" | "volume">("sets");
+  const { userId } = useSubject();
   const q = useQuery({
-    queryKey: ["stats", "advanced", "attribution", from, includeWarmup, weight],
+    queryKey: ["stats", "advanced", "attribution", from, includeWarmup, weight, userId],
     queryFn: () =>
       fetchAttribution({
         from,
         ...(includeWarmup ? { include_warmup: true } : {}),
         indirect_weight: weight,
+        user_id: userId,
       }),
     placeholderData: keepPreviousData,
   });
@@ -423,9 +428,10 @@ function AttributionCard({
 // ---------- 4. rep-max 매트릭스 + Rep PR ----------
 
 function RepMaxCard({ exerciseId }: { exerciseId: number | null }) {
+  const { userId } = useSubject();
   const q = useQuery({
-    queryKey: ["stats", "advanced", "rep-max", exerciseId],
-    queryFn: () => fetchRepMax(exerciseId!),
+    queryKey: ["stats", "advanced", "rep-max", exerciseId, userId],
+    queryFn: () => fetchRepMax(exerciseId!, userId),
     enabled: exerciseId !== null,
     placeholderData: keepPreviousData,
   });
@@ -498,9 +504,10 @@ function RepMaxCard({ exerciseId }: { exerciseId: number | null }) {
 const REP_RANGE_COLORS = [RAMP(1), RAMP(2), RAMP(3), RAMP(4)];
 
 function FatigueCard({ exerciseId, from, rangeNote }: { exerciseId: number | null; from: string; rangeNote: string }) {
+  const { userId } = useSubject();
   const q = useQuery({
-    queryKey: ["stats", "advanced", "fatigue", exerciseId, from],
-    queryFn: () => fetchFatigue(exerciseId!, { from }),
+    queryKey: ["stats", "advanced", "fatigue", exerciseId, from, userId],
+    queryFn: () => fetchFatigue(exerciseId!, { from, user_id: userId }),
     enabled: exerciseId !== null,
     placeholderData: keepPreviousData,
   });
@@ -562,9 +569,10 @@ function FatigueCard({ exerciseId, from, rangeNote }: { exerciseId: number | nul
 const ZONE_COLORS = [RAMP(5), RAMP(4), RAMP(3), RAMP(2), RAMP(1)];
 
 function IntensityCard({ from, rangeNote }: { from: string; rangeNote: string }) {
+  const { userId } = useSubject();
   const q = useQuery({
-    queryKey: ["stats", "advanced", "intensity", from],
-    queryFn: () => fetchIntensity({ from }),
+    queryKey: ["stats", "advanced", "intensity", from, userId],
+    queryFn: () => fetchIntensity({ from, user_id: userId }),
     placeholderData: keepPreviousData,
   });
   return (

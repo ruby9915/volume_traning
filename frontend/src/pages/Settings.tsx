@@ -1,12 +1,9 @@
-import { useCallback, useEffect, useState, type FormEvent } from "react";
-import { useNavigate } from "react-router-dom";
+import { useCallback, useEffect, useState } from "react";
+import { Link, useNavigate } from "react-router-dom";
 import {
-  ApiError,
   apiErrorMessage,
-  changePassword,
   downloadExport,
   fetchBodyweight,
-  logout,
   saveBodyweight,
 } from "../api/client";
 import type { BodyWeightEntry } from "../api/types";
@@ -387,78 +384,6 @@ function ExportSection({ isAdmin }: { isAdmin: boolean }) {
 }
 
 // §10.1 비밀번호 변경 — 사용자 테이블이 생기면서 앱에서 바꿀 수 있게 됐다
-function PasswordSection() {
-  const [current, setCurrent] = useState("");
-  const [next, setNext] = useState("");
-  const [confirm, setConfirm] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
-
-  const submit = async (e: FormEvent) => {
-    e.preventDefault();
-    if (next.length < 4) {
-      setMsg({ ok: false, text: "새 비밀번호는 4자 이상이어야 합니다." });
-      return;
-    }
-    if (next !== confirm) {
-      setMsg({ ok: false, text: "새 비밀번호 확인이 일치하지 않습니다." });
-      return;
-    }
-    setBusy(true);
-    setMsg(null);
-    try {
-      await changePassword({ current_password: current, new_password: next });
-      setCurrent("");
-      setNext("");
-      setConfirm("");
-      setMsg({ ok: true, text: "비밀번호를 변경했습니다." });
-    } catch (err) {
-      setMsg({
-        ok: false,
-        text:
-          err instanceof ApiError && err.status === 401
-            ? "현재 비밀번호가 올바르지 않습니다."
-            : errorText(err),
-      });
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <form onSubmit={(e) => void submit(e)} className="mt-3 flex flex-col gap-2">
-      <input
-        type="password"
-        value={current}
-        onChange={(e) => setCurrent(e.target.value)}
-        placeholder="현재 비밀번호"
-        autoComplete="current-password"
-        className={FIELD_CLS}
-      />
-      <input
-        type="password"
-        value={next}
-        onChange={(e) => setNext(e.target.value)}
-        placeholder="새 비밀번호 (4자 이상)"
-        autoComplete="new-password"
-        className={FIELD_CLS}
-      />
-      <input
-        type="password"
-        value={confirm}
-        onChange={(e) => setConfirm(e.target.value)}
-        placeholder="새 비밀번호 확인"
-        autoComplete="new-password"
-        className={FIELD_CLS}
-      />
-      {msg ? <p className={`text-sm ${msg.ok ? "text-accent" : "text-danger"}`}>{msg.text}</p> : null}
-      <Button type="submit" variant="secondary" disabled={busy || !current || !next}>
-        {busy ? "변경 중…" : "비밀번호 변경"}
-      </Button>
-    </form>
-  );
-}
-
 export default function Settings() {
   const navigate = useNavigate();
   const me = useMe();
@@ -488,19 +413,14 @@ export default function Settings() {
         <ExportSection isAdmin={me.data?.is_admin ?? false} />
         <Card>
           <SectionTitle>계정</SectionTitle>
-          <p className="text-sm">
-            <span className="font-semibold">{me.data?.display_name ?? "…"}</span>
-            {me.data ? <span className="ml-2 text-muted">@{me.data.username}</span> : null}
-            {me.data?.is_admin ? (
-              <span className="ml-2 rounded-tag bg-accent-glow px-1.5 py-0.5 text-[10px] font-bold text-accent">
-                관리자
-              </span>
-            ) : null}
+          <p className="text-sm text-muted">
+            <span className="font-semibold text-text">{me.data?.display_name ?? "…"}</span>
+            {me.data ? <span className="ml-2">@{me.data.username}</span> : null}
           </p>
-          <PasswordSection />
-          <Button variant="danger" full className="mt-4" onClick={() => logout()}>
-            로그아웃
-          </Button>
+          <p className="mt-2 text-sm text-muted">
+            프로필 편집·비밀번호 변경·친구 관리·로그아웃은{" "}
+            <Link to="/profile" className="font-semibold text-accent underline underline-offset-2">프로필</Link> 탭에 있습니다.
+          </p>
         </Card>
       </div>
     </main>

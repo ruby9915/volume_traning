@@ -16,7 +16,10 @@ def test_register_login_me(client):
     client.headers["Authorization"] = f"Bearer {token}"
     me = client.get("/api/auth/me").json()
     assert (me["username"], me["display_name"], me["is_admin"]) == ("alice", "alice", False)
-    assert set(me.keys()) == {"id", "username", "display_name", "is_admin", "created_at"}
+    assert set(me.keys()) == {
+        "id", "username", "display_name", "is_admin", "created_at",
+        "bio", "avatar", "share_with_friends",  # §13 프로필
+    }
 
     client.headers.pop("Authorization")
     login(client, "alice", "pass1234")

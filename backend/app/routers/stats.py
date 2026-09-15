@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse, Response
 from starlette.background import BackgroundTask
 
-from ..auth import CurrentUser, require_admin, require_auth
+from ..auth import CurrentUser, require_admin, require_auth, subject_user
 from ..db import E1RM_EXPR, get_db
 from ..schemas import (
     DATE_PATTERN,
@@ -313,7 +313,7 @@ def _totals(db: sqlite3.Connection, user_id: int) -> TotalStats:
 
 @router.get("/stats/summary", response_model=StatsSummaryOut)
 def stats_summary(
-    user: CurrentUser = Depends(require_auth), db: sqlite3.Connection = Depends(get_db)
+    user: CurrentUser = Depends(subject_user), db: sqlite3.Connection = Depends(get_db)
 ) -> StatsSummaryOut:
     today = _effective_today()
     cur_ws = today - timedelta(days=today.weekday())
@@ -359,7 +359,7 @@ def stats_volume(
     from_: str | None = Query(default=None, alias="from", pattern=DATE_PATTERN),
     to: str | None = Query(default=None, pattern=DATE_PATTERN),
     include_warmup: bool = False,
-    user: CurrentUser = Depends(require_auth),
+    user: CurrentUser = Depends(subject_user),
     db: sqlite3.Connection = Depends(get_db),
 ) -> StatsVolumeOut:
     period_expr = {
@@ -413,7 +413,7 @@ def stats_muscles(
     from_: str | None = Query(default=None, alias="from", pattern=DATE_PATTERN),
     to: str | None = Query(default=None, pattern=DATE_PATTERN),
     include_warmup: bool = False,
-    user: CurrentUser = Depends(require_auth),
+    user: CurrentUser = Depends(subject_user),
     db: sqlite3.Connection = Depends(get_db),
 ) -> StatsMusclesOut:
     """타겟 행 전부(level 2·3)의 볼륨·세트 수. level 2 = 자기 + 세부 합산, level 3 = 자기만.
@@ -469,7 +469,7 @@ def stats_exercise(
     from_: str | None = Query(default=None, alias="from", pattern=DATE_PATTERN),
     to: str | None = Query(default=None, pattern=DATE_PATTERN),
     include_warmup: bool = False,
-    user: CurrentUser = Depends(require_auth),
+    user: CurrentUser = Depends(subject_user),
     db: sqlite3.Connection = Depends(get_db),
 ) -> StatsExerciseOut:
     exercise = db.execute(
@@ -519,7 +519,7 @@ def stats_exercise(
 @router.get("/stats/family", response_model=StatsFamilyOut)
 def stats_family(
     base_movement: str = Query(min_length=1, max_length=50),
-    user: CurrentUser = Depends(require_auth),
+    user: CurrentUser = Depends(subject_user),
     db: sqlite3.Connection = Depends(get_db),
 ) -> StatsFamilyOut:
     """§3.6 계열 합산 — 같은 base_movement 종목들의 날짜별 합산 볼륨 + 최고 e1RM.
@@ -567,7 +567,7 @@ def stats_family(
 
 @router.get("/stats/prs", response_model=StatsPrsOut)
 def stats_prs(
-    user: CurrentUser = Depends(require_auth), db: sqlite3.Connection = Depends(get_db)
+    user: CurrentUser = Depends(subject_user), db: sqlite3.Connection = Depends(get_db)
 ) -> StatsPrsOut:
     events, bests = _pr_events(db, user.id)
     records = [
@@ -585,7 +585,7 @@ def stats_prs(
 @router.get("/stats/calendar", response_model=StatsCalendarOut)
 def stats_calendar(
     months: int = Query(default=6, ge=1, le=60),
-    user: CurrentUser = Depends(require_auth),
+    user: CurrentUser = Depends(subject_user),
     db: sqlite3.Connection = Depends(get_db),
 ) -> StatsCalendarOut:
     today = _effective_today()

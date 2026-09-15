@@ -12,7 +12,7 @@ import secrets
 import sqlite3
 
 import jwt
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from .config import get_settings
@@ -63,12 +63,16 @@ class CurrentUser:
 
 
 def _user_out(row: sqlite3.Row) -> UserOut:
+    keys = row.keys()
     return UserOut(
         id=row["id"],
         username=row["username"],
         display_name=row["display_name"],
         is_admin=bool(row["is_admin"]),
         created_at=row["created_at"],
+        bio=row["bio"] if "bio" in keys else None,
+        avatar=row["avatar"] if "avatar" in keys else None,
+        share_with_friends=bool(row["share_with_friends"]) if "share_with_friends" in keys else True,
     )
 
 
@@ -141,6 +145,46 @@ def require_admin(user: CurrentUser = Depends(require_auth)) -> CurrentUser:
     if not user.is_admin:
         raise HTTPException(status_code=403, detail="관리자만 사용할 수 있습니다")
     return user
+
+
+def is_friends(db: sqlite3.Connection, a: int, b: int) -> bool:
+    """§13 수락된 친구 관계(양방향)."""
+    return (
+        db.execute(
+            "SELECT 1 FROM friendship WHERE status = 'accepted'"
+            " AND ((requester_id = ? AND addressee_id = ?) OR (requester_id = ? AND addressee_id = ?))",
+            (a, b, b, a),
+        ).fetchone()
+        is not None
+    )
+
+
+def subject_user(
+    user_id: int | None = Query(None, description="§13 친구의 데이터를 읽을 때 그 사용자 id"),
+    user: CurrentUser = Depends(require_auth),
+    db: sqlite3.Connection = Depends(get_db),
+) -> CurrentUser:
+    """§13 친구 공유: `?user_id=`가 있으면 그 사용자를 '대상'으로 돌려준다 — 조회(GET) 핸들러 전용.
+
+    조건: 수락된 친구이고 상대가 공개(share_with_friends)를 켜 둔 경우. 관리자는 항상 가능.
+    쓰기 핸들러는 계속 require_auth(본인)를 쓰므로 user_id를 붙여도 남의 기록에 쓸 수 없다.
+    """
+    if user_id is None or user_id == user.id:
+        return user
+    row = db.execute(
+        "SELECT id, username, display_name, is_admin, share_with_friends FROM user WHERE id = ?",
+        (user_id,),
+    ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="사용자를 찾을 수 없습니다")
+    if not user.is_admin and (not row["share_with_friends"] or not is_friends(db, user.id, user_id)):
+        raise HTTPException(
+            status_code=403, detail={"code": "not_friends", "message": "친구만 볼 수 있습니다"}
+        )
+    return CurrentUser(
+        id=row["id"], username=row["username"], display_name=row["display_name"],
+        is_admin=bool(row["is_admin"]),
+    )
 
 
 @router.get("/me", response_model=UserOut)

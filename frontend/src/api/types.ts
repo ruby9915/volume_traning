@@ -49,6 +49,57 @@ export interface User {
   display_name: string;
   is_admin: boolean;
   created_at: string;
+  // §13 프로필
+  bio: string | null;
+  avatar: string | null;
+  share_with_friends: boolean;
+}
+
+// ---------- 프로필·친구 (§13) ----------
+
+export type Relation = "self" | "friend" | "pending_in" | "pending_out" | "none";
+
+export interface FriendUser {
+  id: number;
+  username: string;
+  display_name: string;
+  avatar: string | null;
+  bio: string | null;
+  created_at: string;
+  relation: Relation;
+  request_id: number | null;
+}
+
+export interface FriendRequest {
+  request_id: number;
+  user: FriendUser;
+  created_at: string;
+}
+
+export interface FriendsOut {
+  friends: FriendUser[];
+  incoming: FriendRequest[];
+  outgoing: FriendRequest[];
+}
+
+export interface ProfileStats {
+  training_weeks: number;
+  session_count: number;
+  set_count: number;
+  volume_4w: number;
+  last_session_date: string | null;
+}
+
+export interface Profile extends FriendUser {
+  stats: ProfileStats | null; // 본인·친구(공개 시)·관리자만
+  share_with_friends: boolean | null; // 본인만
+}
+
+export interface ProfileUpdateRequest {
+  display_name?: string;
+  bio?: string | null;
+  avatar?: string | null;
+  share_with_friends?: boolean;
 }
 
 export interface PasswordChangeRequest {
@@ -76,6 +127,7 @@ export interface MachineCreateRequest {
 export interface MachineSearchParams {
   q?: string;
   brand?: string;
+  region?: string;
   limit?: number;
 }
 
@@ -222,6 +274,7 @@ export interface SessionListParams {
   to?: string;
   limit?: number;
   offset?: number;
+  user_id?: number; // §13 친구 열람
 }
 
 export interface SessionSummary {
@@ -289,6 +342,7 @@ export interface RangeParams {
   from?: string;
   to?: string;
   include_warmup?: boolean;
+  user_id?: number; // §13 친구 열람
 }
 
 export interface WeekVolumePoint {

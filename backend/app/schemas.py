@@ -112,6 +112,64 @@ class UserOut(BaseModel):
     display_name: str
     is_admin: bool
     created_at: str
+    # §13 프로필
+    bio: str | None = None
+    avatar: str | None = None
+    share_with_friends: bool = True
+
+
+# ---------- 프로필·친구 (§13) ----------
+
+Bio = Annotated[str, StringConstraints(strip_whitespace=True, max_length=120)]
+Avatar = Annotated[str, StringConstraints(strip_whitespace=True, max_length=8)]
+Relation = Literal["self", "friend", "pending_in", "pending_out", "none"]
+
+
+class ProfileUpdate(StrictModel):
+    display_name: Name | None = None
+    bio: Bio | None = None
+    avatar: Avatar | None = None
+    share_with_friends: bool | None = None
+
+
+class FriendUserOut(BaseModel):
+    id: int
+    username: str
+    display_name: str
+    avatar: str | None = None
+    bio: str | None = None
+    created_at: str
+    relation: Relation = "none"
+    request_id: int | None = None
+
+
+class FriendRequestOut(BaseModel):
+    request_id: int
+    user: FriendUserOut
+    created_at: str
+
+
+class FriendsOut(BaseModel):
+    friends: list[FriendUserOut]
+    incoming: list[FriendRequestOut]
+    outgoing: list[FriendRequestOut]
+
+
+class FriendRequestCreate(StrictModel):
+    username: Username
+
+
+class ProfileStatsOut(BaseModel):
+    training_weeks: int
+    session_count: int
+    set_count: int
+    volume_4w: float
+    last_session_date: str | None = None
+
+
+class ProfileOut(FriendUserOut):
+    stats: ProfileStatsOut | None = None  # 본인·친구(공개 시)·관리자만
+    share_with_friends: bool | None = None  # 본인만
 
 
 # ---------- Targets / Machines (§10.2, §10.4) ----------

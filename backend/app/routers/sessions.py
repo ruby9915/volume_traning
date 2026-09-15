@@ -2,7 +2,7 @@ import sqlite3
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 
-from ..auth import CurrentUser, require_auth
+from ..auth import CurrentUser, require_auth, subject_user
 from ..db import E1RM_EXPR, get_db
 from ..schemas import (
     BodyWeightOut,
@@ -325,7 +325,7 @@ def list_sessions(
     date_to: str | None = Query(default=None, alias="to"),
     limit: int = Query(default=50, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
-    user: CurrentUser = Depends(require_auth),
+    user: CurrentUser = Depends(subject_user),
     db: sqlite3.Connection = Depends(get_db),
 ) -> list[SessionSummary]:
     return list_sessions_for(db, user.id, date_from, date_to, limit, offset)
@@ -399,7 +399,7 @@ def session_detail_for(db: sqlite3.Connection, user_id: int, session_id: int) ->
 @router.get("/sessions/{session_id}", response_model=SessionDetail)
 def get_session(
     session_id: int,
-    user: CurrentUser = Depends(require_auth),
+    user: CurrentUser = Depends(subject_user),
     db: sqlite3.Connection = Depends(get_db),
 ) -> SessionDetail:
     return session_detail_for(db, user.id, session_id)
@@ -454,7 +454,7 @@ def list_bodyweight_for(db: sqlite3.Connection, user_id: int, limit: int) -> lis
 @router.get("/bodyweight", response_model=list[BodyWeightOut])
 def list_bodyweight(
     limit: int = Query(default=30, ge=1, le=1000),
-    user: CurrentUser = Depends(require_auth),
+    user: CurrentUser = Depends(subject_user),
     db: sqlite3.Connection = Depends(get_db),
 ) -> list[BodyWeightOut]:
     return list_bodyweight_for(db, user.id, limit)

@@ -2,12 +2,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { fetchSessions } from "../api/client";
 import type { SessionSummary } from "../api/types";
+import AnalysisTabs from "../components/AnalysisTabs";
 import Button from "../components/Button";
 import Card from "../components/Card";
 import ErrorRetry from "../components/ErrorRetry";
 import Spinner from "../components/Spinner";
 import { formatFullDate, todayStr } from "../utils/date";
 import { fmtInt } from "../utils/format";
+import { useSubject } from "../subject";
 
 const CAL_HEADERS = ["월", "화", "수", "목", "금", "토", "일"];
 const PAGE_SIZE = 20;
@@ -51,8 +53,9 @@ export function SessionCard({
   onClick?: () => void;
 }) {
   const navigate = useNavigate();
+  const { basePath } = useSubject();
   return (
-    <Card variant="sunken" className="mb-2" onClick={onClick ?? (() => navigate(`/history/${session.id}`))}>
+    <Card variant="sunken" className="mb-2" onClick={onClick ?? (() => navigate(`${basePath}/history/${session.id}`))}>
       <div className="flex items-start justify-between gap-2">
         <p className="font-numeric text-2xl font-bold leading-tight dark:font-semibold">
           {fmtInt(session.total_volume)}
@@ -77,6 +80,7 @@ export function SessionCard({
 
 function CalendarView() {
   const navigate = useNavigate();
+  const { userId, readOnly } = useSubject();
   const today = todayStr();
   const thisMonth = today.slice(0, 7);
   const [month, setMonth] = useState(thisMonth);
@@ -95,6 +99,7 @@ function CalendarView() {
       from: `${month}-01`,
       to: `${month}-${String(lastDay).padStart(2, "0")}`,
       limit: 200,
+      user_id: userId,
     })
       .then((rows) => {
         if (alive) setSessions(rows);
@@ -105,7 +110,7 @@ function CalendarView() {
     return () => {
       alive = false;
     };
-  }, [month, reloadKey]);
+  }, [month, reloadKey, userId]);
 
   const byDate = new Map<string, DayAgg>();
   for (const s of sessions ?? []) {
@@ -201,7 +206,7 @@ function CalendarView() {
                   <>
                     <p className="text-sm text-muted">기록이 없습니다.</p>
                     {/* §3.7B 빈 날짜에 과거 기록 생성 — 미래 날짜는 제외 */}
-                    {selected <= today && (
+                    {selected <= today && !readOnly && (
                       <Button
                         variant="secondary"
                         className="mt-3"
@@ -224,6 +229,7 @@ function CalendarView() {
 }
 
 function ListView() {
+  const { userId } = useSubject();
   const [items, setItems] = useState<SessionSummary[]>([]);
   const [hasMore, setHasMore] = useState(true);
   const [loading, setLoading] = useState(false);
@@ -238,7 +244,7 @@ function ListView() {
     setLoading(true);
     setError(false);
     try {
-      const rows = await fetchSessions({ limit: PAGE_SIZE, offset: offsetRef.current });
+      const rows = await fetchSessions({ limit: PAGE_SIZE, offset: offsetRef.current, user_id: userId });
       offsetRef.current += rows.length;
       setItems((prev) => [...prev, ...rows]);
       if (rows.length < PAGE_SIZE) setHasMore(false);
@@ -248,7 +254,7 @@ function ListView() {
       loadingRef.current = false;
       setLoading(false);
     }
-  }, []);
+  }, [userId]);
 
   useEffect(() => {
     if (!hasMore || error) return;
@@ -301,6 +307,7 @@ function ListView() {
 
 export default function History() {
   const [view, setView] = useState<"calendar" | "list">("calendar");
+  const { subject, readOnly } = useSubject();
 
   // 분석 화면 세그먼트 토글 패턴: 라이트 = 잉크 필 + 흰 텍스트 / 다크 = bg색 세그먼트
   const toggleCls = (active: boolean) =>
@@ -310,18 +317,21 @@ export default function History() {
 
   return (
     <main className="mx-auto max-w-[720px] p-4">
+      <AnalysisTabs />
       <header className="flex items-center justify-between">
         <h1 className="text-[19px] font-extrabold dark:font-numeric dark:text-[13px] dark:font-semibold dark:tracking-[3px] dark:uppercase dark:text-muted">
-          <span className="dark:hidden">이력</span>
+          <span className="dark:hidden">{subject ? `${subject.displayName}의 이력` : "이력"}</span>
           <span className="hidden dark:inline">History</span>
         </h1>
-        <Link
-          to="/settings"
-          aria-label="설정"
-          className="touch-target flex items-center justify-center rounded-row text-xl text-muted active:bg-surface-2"
-        >
-          ⚙
-        </Link>
+        {readOnly ? null : (
+          <Link
+            to="/settings"
+            aria-label="설정"
+            className="touch-target flex items-center justify-center rounded-row text-xl text-muted active:bg-surface-2"
+          >
+            ⚙
+          </Link>
+        )}
       </header>
 
       <div className="mt-3 grid grid-cols-2 gap-1 rounded-field bg-surface p-1 shadow-card">

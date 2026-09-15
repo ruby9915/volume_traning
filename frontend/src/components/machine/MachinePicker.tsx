@@ -4,7 +4,8 @@
 import { useEffect, useState } from "react";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { apiErrorMessage, createMachine, fetchMachineBrands, fetchMachines } from "../../api/client";
-import type { Machine } from "../../api/types";
+import type { Machine, Region } from "../../api/types";
+import { REGION_NAMES_KO } from "../../api/types";
 import { useTargets } from "../../hooks/useTargets";
 import BottomSheet from "../BottomSheet";
 import Button from "../Button";
@@ -72,6 +73,7 @@ export default function MachinePicker({
   const [q, setQ] = useState("");
   const [dq, setDq] = useState("");
   const [brand, setBrand] = useState("");
+  const [region, setRegion] = useState<Region | "">("");
   const [custom, setCustom] = useState(false);
 
   useEffect(() => {
@@ -83,10 +85,10 @@ export default function MachinePicker({
   }, [open]);
 
   const brandsQ = useQuery({ queryKey: ["machine-brands"], queryFn: fetchMachineBrands, staleTime: 5 * 60_000 });
-  const active = dq.length > 0 || brand !== "";
+  const active = dq.length > 0 || brand !== "" || region !== "";
   const resultsQ = useQuery({
-    queryKey: ["machines", "search", dq, brand],
-    queryFn: () => fetchMachines({ q: dq, brand, limit: LIMIT }),
+    queryKey: ["machines", "search", dq, brand, region],
+    queryFn: () => fetchMachines({ q: dq, brand, region: region || undefined, limit: LIMIT }),
     enabled: open && active,
     placeholderData: keepPreviousData,
     staleTime: 5 * 60_000,
@@ -126,10 +128,22 @@ export default function MachinePicker({
               </button>
             ))}
           </div>
+          <div className="flex flex-wrap gap-1.5" role="group" aria-label="부위">
+            {(Object.keys(REGION_NAMES_KO) as Region[]).map((r) => (
+              <button
+                key={r}
+                type="button"
+                onClick={() => setRegion(region === r ? "" : r)}
+                className={`rounded-chip border px-2.5 py-1 text-xs ${region === r ? "border-accent/40 bg-accent-glow font-semibold text-accent" : "border-line text-muted"}`}
+              >
+                {REGION_NAMES_KO[r]}
+              </button>
+            ))}
+          </div>
           <div className="min-h-[40dvh]">
             {!active ? (
               <p className="px-1 py-3 text-sm text-muted">
-                브랜드를 고르거나 검색어를 입력하세요. 고른 머신은 내 머신에 담겨 다음부터 바로 보입니다.
+                브랜드나 부위를 고르거나 검색어를 입력하세요. 고른 머신은 내 머신에 담겨 다음부터 바로 보입니다.
               </p>
             ) : resultsQ.isLoading ? (
               <div className="flex justify-center py-6"><Spinner /></div>
