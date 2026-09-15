@@ -440,14 +440,14 @@ export default function Dashboard() {
         <Card className={musclesQ.isPlaceholderData ? "opacity-60" : ""}>
           <div className="mb-3 flex items-baseline justify-between gap-2">
             <CardTitle title="부위별 분배" note={`${rangeNote} · 타겟 부위별 볼륨 비율`} toggle="none" />
-            <div className="-mt-4 flex items-center gap-1">
-            <div className="flex rounded-full bg-well p-0.5 dark:rounded-[7px]">
+            <div className="-mt-4 flex shrink-0 items-center gap-1">
+            <div className="flex shrink-0 rounded-full bg-well p-0.5 dark:rounded-[7px]">
               {DIST_LEVELS.map((l) => (
                 <button
                   key={l.key}
                   type="button"
                   onClick={() => setDistLevel(l.key)}
-                  className={`rounded-full px-2.5 py-1 text-[11px] font-semibold dark:rounded-[6px] ${
+                  className={`rounded-full px-2.5 py-1 text-[11px] font-semibold whitespace-nowrap dark:rounded-[6px] ${
                     distLevel === l.key ? "bg-surface text-text shadow-card" : "text-muted"
                   }`}
                 >

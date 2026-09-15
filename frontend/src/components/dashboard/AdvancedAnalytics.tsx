@@ -71,7 +71,7 @@ function Segmented<T extends string>({
           key={o.key}
           type="button"
           onClick={() => onChange(o.key)}
-          className={`rounded-full px-2.5 py-1 text-[11px] font-semibold dark:rounded-[6px] ${
+          className={`rounded-full px-2.5 py-1 text-[11px] font-semibold whitespace-nowrap dark:rounded-[6px] ${
             value === o.key ? "bg-surface text-text shadow-card" : "text-muted"
           }`}
         >
@@ -178,7 +178,7 @@ function FrequencyCard() {
     <Card>
       <div className="mb-1 flex items-baseline justify-between gap-2">
         <CardTitle title="분할 실행 점검" note={`${FREQUENCY_WEEKS}주 · 주별 세션 수`} toggle="none" />
-        <div className="flex items-center gap-1">
+        <div className="flex shrink-0 items-center gap-1">
           <Segmented
             value={level}
             onChange={setLevel}
@@ -368,7 +368,7 @@ function AttributionCard({
     <Card className={q.isPlaceholderData ? "opacity-60" : ""}>
       <div className="mb-1 flex items-baseline justify-between gap-2">
         <CardTitle title="관여 근육 분배" note={`${rangeNote} · 간접 ×${weight}`} toggle="none" />
-        <div className="flex items-center gap-1">
+        <div className="flex shrink-0 items-center gap-1">
           <Segmented
             value={unit}
             onChange={setUnit}
