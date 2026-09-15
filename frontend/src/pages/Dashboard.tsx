@@ -68,13 +68,60 @@ function periodLabel(mode: PeriodMode, period: string): string {
   return `${period.slice(2, 4)}.${Number(period.slice(5, 7))}`;
 }
 
-function CardTitle({ title, note }: { title: string; note?: string }) {
+/** 카드 제목 + 한 줄 설명. onToggle이 있으면 오른쪽에 접기/펼치기 버튼 (2026-09-15 사용자 요청: 최근 PR 카드). */
+function CardTitle({
+  title,
+  note,
+  collapsed,
+  onToggle,
+}: {
+  title: string;
+  note?: string;
+  collapsed?: boolean;
+  onToggle?: () => void;
+}) {
   return (
-    <div className="mb-4 flex items-baseline gap-1.5">
-      <h2 className="text-[15px] font-bold">{title}</h2>
-      {note && <span className="text-[11px] text-muted">· {note}</span>}
+    <div className={`flex items-baseline justify-between gap-2 ${collapsed ? "mb-0" : "mb-4"}`}>
+      <div className="flex min-w-0 flex-wrap items-baseline gap-1.5">
+        <h2 className="text-[15px] font-bold">{title}</h2>
+        {note && <span className="text-[11px] text-muted">· {note}</span>}
+      </div>
+      {onToggle ? (
+        <button
+          type="button"
+          onClick={onToggle}
+          aria-expanded={!collapsed}
+          className="touch-target -my-2 -mr-2 shrink-0 px-2 text-xs font-semibold text-muted active:text-text"
+        >
+          {collapsed ? "펼치기 ▾" : "접기 ▴"}
+        </button>
+      ) : null}
     </div>
   );
+}
+
+/** 카드 접힘 상태 — 기기별로 기억 (localStorage, 실패해도 기본값으로 동작) */
+function useCollapsed(key: string, initial = false): [boolean, () => void] {
+  const storageKey = `vt_collapsed_${key}`;
+  const [collapsed, setCollapsed] = useState<boolean>(() => {
+    try {
+      const v = localStorage.getItem(storageKey);
+      return v === null ? initial : v === "1";
+    } catch {
+      return initial;
+    }
+  });
+  const toggle = () =>
+    setCollapsed((c) => {
+      const next = !c;
+      try {
+        localStorage.setItem(storageKey, next ? "1" : "0");
+      } catch {
+        /* 저장 실패는 무시 — 이번 세션만 유지 */
+      }
+      return next;
+    });
+  return [collapsed, toggle];
 }
 
 function Loading() {
@@ -303,6 +350,7 @@ export default function Dashboard() {
   ] as const;
 
   const prFeed = prsQ.data?.feed.slice(0, 5) ?? [];
+  const [prCollapsed, togglePr] = useCollapsed("recent-pr");
 
   return (
     <main className="mx-auto max-w-[720px] px-[18px] pt-4 pb-6">
@@ -461,8 +509,13 @@ export default function Dashboard() {
 
         {/* 최근 PR — 종목명 + 종류·날짜 캡션 + 기록값 */}
         <Card>
-          <CardTitle title="최근 PR" note="종목별 최고 중량 또는 e1RM(추정 1RM) 갱신 이력" />
-          {prsQ.isPending ? (
+          <CardTitle
+            title="최근 PR"
+            note={`종목별 최고 중량 또는 e1RM(추정 1RM) 갱신 이력${prFeed.length ? ` · ${prFeed.length}건` : ""}`}
+            collapsed={prCollapsed}
+            onToggle={togglePr}
+          />
+          {prCollapsed ? null : prsQ.isPending ? (
             <Loading />
           ) : prsQ.isError ? (
             <ErrorRetry onRetry={() => prsQ.refetch()} />
