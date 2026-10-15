@@ -17,3 +17,6 @@ dist/
 
 # ops
 scripts/logs/
+
+# Word lock files
+~$*.docx
