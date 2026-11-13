@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import type { TargetCode, Technique } from "./api/types";
+import type { MachineRef, TargetCode, Technique } from "./api/types";
 import { todayStr } from "./utils/date";
 
 export type WeightStep = 1.25 | 2.5 | 5;
@@ -34,9 +34,13 @@ interface AppState {
   // §10.2 세트 타겟 — 종목 카드 단위 sticky (값 없음 = 종목 기본 타겟).
   // persist 제외 + endSession에서 초기화 → 세션 간 carry-over 없음
   targets: Partial<Record<number, TargetCode>>;
-  // targets가 설정된 날짜(todayStr, 03:00 경계). 앱을 켠 채 날짜가 바뀌면
-  // 새 lazy 세션이 생기므로 stale targets를 폐기하기 위한 스탬프
-  targetsDate: string | null;
+  // §15.3 세트 머신 — 종목 카드에서 직접 고른 값. 키 없음 = 고르지 않음(이 세션의 마지막 세트 →
+  // 지난번에 쓴 머신 순으로 따른다), null = "머신 없음"을 직접 고름. 타겟과 달리 다음 세션의
+  // 기본값은 서버의 지난 기록이 정하므로 여기 값은 세션이 끝나면 버린다
+  machines: Partial<Record<number, MachineRef | null>>;
+  // targets·machines가 설정된 날짜(todayStr, 03:00 경계). 앱을 켠 채 날짜가 바뀌면
+  // 새 lazy 세션이 생기므로 stale 값을 폐기하기 위한 스탬프
+  stickyDate: string | null;
   weightStep: WeightStep; // 설정: 중량 증분 (persist)
   restTargetSeconds: RestTarget; // 설정: 휴식 목표시간 (persist) — Log 진행바의 분모
   // 설정: 타겟 변경 시 기존 세트 — 물어보기(기본)/항상 적용/적용 안 함 (persist)
@@ -45,7 +49,8 @@ interface AppState {
   setActiveExercise: (id: number | null) => void;
   setStepper: (patch: Partial<StepperInput>) => void;
   setTarget: (exerciseId: number, code: TargetCode | null) => void;
-  clearTargets: () => void; // 03:00 경계 통과 등 — targets만 초기화
+  setMachine: (exerciseId: number, machine: MachineRef | null) => void;
+  clearSticky: () => void; // 03:00 경계 통과 등 — 카드 단위 선택(targets·machines)만 초기화
   startRest: (at?: number) => void;
   clearRest: () => void;
   setWeightStep: (step: WeightStep) => void;
@@ -62,7 +67,8 @@ export const useAppStore = create<AppState>()(
       stepper: DEFAULT_STEPPER,
       restStartedAt: null,
       targets: {},
-      targetsDate: null,
+      machines: {},
+      stickyDate: null,
       weightStep: 2.5,
       restTargetSeconds: 120,
       targetBackfill: "ask",
@@ -74,9 +80,11 @@ export const useAppStore = create<AppState>()(
           const next = { ...s.targets };
           if (code == null) delete next[exerciseId];
           else next[exerciseId] = code;
-          return { targets: next, targetsDate: todayStr() };
+          return { targets: next, stickyDate: todayStr() };
         }),
-      clearTargets: () => set({ targets: {}, targetsDate: null }),
+      setMachine: (exerciseId, machine) =>
+        set((s) => ({ machines: { ...s.machines, [exerciseId]: machine }, stickyDate: todayStr() })),
+      clearSticky: () => set({ targets: {}, machines: {}, stickyDate: null }),
       startRest: (at = Date.now()) => set({ restStartedAt: at }),
       clearRest: () => set({ restStartedAt: null }),
       setWeightStep: (step) => set({ weightStep: step }),
@@ -89,7 +97,8 @@ export const useAppStore = create<AppState>()(
           stepper: DEFAULT_STEPPER,
           restStartedAt: null,
           targets: {},
-          targetsDate: null,
+          machines: {},
+          stickyDate: null,
         }),
     }),
     {

@@ -25,6 +25,8 @@ import type {
   LoginResponse,
   Machine,
   MachineCreateRequest,
+  MachineExercises,
+  MachineRef,
   MachineSearchParams,
   MuscleStats,
   OutboxItem,
@@ -252,6 +254,11 @@ export function fetchMachineBrands(): Promise<BrandCount[]> {
   return api("/api/machines/brands");
 }
 
+/** 머신을 먼저 골랐을 때의 종목 후보 — 내 사용 이력 + 추천 (§15.4) */
+export function fetchMachineExercises(machineId: number): Promise<MachineExercises> {
+  return api(`/api/machines/${machineId}/exercises`);
+}
+
 // ---------- 내 머신 (§10.4) ----------
 
 export function fetchMyMachines(): Promise<Machine[]> {
@@ -292,9 +299,23 @@ export function restoreExercise(id: number): Promise<Exercise> {
   return api(`/api/exercises/${id}/restore`, { method: "POST" });
 }
 
-export async function fetchLastRecord(exerciseId: number): Promise<LastRecord | null> {
+/**
+ * 지난 기록 (§15.3 머신 범위).
+ * machine: undefined = 머신과 무관한 가장 최근 세션 / null = 머신 없이 한 기록 / 숫자 = 그 머신으로 한 기록
+ * excludeSessionId: 그 세션은 빼고 찾는다 (지금 기록 중인 세션의 세트가 "지난번"으로 나오지 않게)
+ */
+export async function fetchLastRecord(
+  exerciseId: number,
+  machine?: number | null,
+  excludeSessionId?: number | null,
+): Promise<LastRecord | null> {
   try {
-    return await api<LastRecord>(`/api/exercises/${exerciseId}/last-record`);
+    return await api<LastRecord>(
+      `/api/exercises/${exerciseId}/last-record${qs({
+        machine: machine === undefined ? undefined : (machine ?? "none"),
+        exclude_session: excludeSessionId ?? undefined,
+      })}`,
+    );
   } catch (e) {
     // 계약(types.ts): 이전 기록 없음(404) = null — React Query 재시도·에러 상태 방지
     if (e instanceof ApiError && e.status === 404) return null;
@@ -362,6 +383,20 @@ export function updateOutboxTarget(clientIds: string[], target: TargetCode | nul
   );
 }
 
+// §15.3 머신 소급 적용 — 타겟과 같은 이유로 큐 항목을 직접 갱신한다 (같은 좁은 경쟁 창)
+export function updateOutboxMachine(clientIds: string[], machine: MachineRef | null): void {
+  const idSet = new Set(clientIds);
+  const items = readOutbox();
+  if (!items.some((i) => idSet.has(i.client_id))) return;
+  writeOutbox(
+    items.map((i) =>
+      idSet.has(i.client_id)
+        ? { ...i, machine_id: machine?.id ?? null, machine_name: machine?.name_ko ?? null }
+        : i,
+    ),
+  );
+}
+
 // 전송 대기 세트 구독 (회색+스피너 표기용). 구독 즉시 현재 상태로 1회 호출.
 export function subscribeOutbox(listener: OutboxListener): () => void {
   outboxListeners.add(listener);
@@ -390,6 +425,8 @@ function postSet(item: OutboxItem): Promise<WorkoutSet> {
     // undefined면 JSON.stringify가 필드 자체를 생략 → 서버가 종목 기본 타겟 (v1 큐 항목 호환)
     target: item.target,
     technique: item.technique ?? null,
+    // undefined(옛 큐 항목)면 필드 생략 → 서버가 머신 없음으로 저장
+    machine_id: item.machine_id,
     session_id: item.session_id,
   };
   return api("/api/sets", { method: "POST", body: JSON.stringify(payload) });
@@ -480,6 +517,8 @@ export async function saveSet(input: SaveSetInput): Promise<WorkoutSet | null> {
     note: input.note,
     target: input.target,
     technique: input.technique ?? null,
+    machine_id: input.machine?.id ?? null,
+    machine_name: input.machine?.name_ko ?? null,
     session_id: input.session_id,
     queued_at: new Date().toISOString(),
   };

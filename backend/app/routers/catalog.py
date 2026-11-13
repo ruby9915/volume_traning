@@ -6,7 +6,15 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from ..auth import CurrentUser, require_auth
 from ..db import get_db
-from ..schemas import BrandCountOut, MachineCreate, MachineOut, TargetOut
+from ..machine_match import ExerciseInfo, MachineInfo, suggest
+from ..schemas import (
+    BrandCountOut,
+    MachineCreate,
+    MachineExercisesOut,
+    MachineExerciseUse,
+    MachineOut,
+    TargetOut,
+)
 
 router = APIRouter(prefix="/api", tags=["catalog"])
 
@@ -28,6 +36,24 @@ def list_targets(db: sqlite3.Connection = Depends(get_db)) -> list[TargetOut]:
         """
     ).fetchall()
     return [TargetOut(**dict(r)) for r in rows]
+
+
+def machine_id_or_422(db: sqlite3.Connection, machine_id: int | None) -> int | None:
+    """세트에 붙일 머신 id 검증 (§15.1). None은 그대로 — 머신 없음."""
+    if machine_id is None:
+        return None
+    if db.execute("SELECT 1 FROM machine WHERE id = ?", (machine_id,)).fetchone() is None:
+        raise HTTPException(status_code=422, detail="machine_id에 해당하는 머신이 없습니다")
+    return machine_id
+
+
+def ensure_my_machine(db: sqlite3.Connection, user_id: int, machine_id: int | None) -> None:
+    """세트에 쓴 머신은 내 머신에 들어 있게 한다 (§15.3) — 다음 기록의 기본 머신 계산이 내 머신 기준이라서."""
+    if machine_id is not None:
+        db.execute(
+            "INSERT OR IGNORE INTO user_machine (user_id, machine_id) VALUES (?, ?)",
+            (user_id, machine_id),
+        )
 
 
 def _machine_out(row: sqlite3.Row) -> MachineOut:
@@ -87,6 +113,94 @@ def list_machine_brands(db: sqlite3.Connection = Depends(get_db)) -> list[BrandC
         "SELECT brand, COUNT(*) AS count FROM machine GROUP BY brand ORDER BY count DESC, brand"
     ).fetchall()
     return [BrandCountOut(brand=r["brand"], count=r["count"]) for r in rows]
+
+
+@router.get("/machines/{machine_id}/exercises", response_model=MachineExercisesOut)
+def machine_exercises(
+    machine_id: int,
+    user: CurrentUser = Depends(require_auth),
+    db: sqlite3.Connection = Depends(get_db),
+) -> MachineExercisesOut:
+    """머신을 먼저 골랐을 때의 종목 후보 (§15.4).
+
+    used = 내가 이 머신으로 기록한 종목(최근 순). suggested = 그 밖의 추천(machine_match).
+    둘 다 지금 내게 보이는 활성 종목만 — 숨긴 종목은 기록이 있어도 후보에서 빠진다.
+    """
+    row = db.execute(
+        """
+        SELECT m.id, m.brand, m.model, m.name_ko,
+               tp.code AS target, tp.muscle_code AS muscle, tp.region AS region
+        FROM machine m LEFT JOIN target_path tp ON tp.id = m.target_id
+        WHERE m.id = ?
+        """,
+        (machine_id,),
+    ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="머신을 찾을 수 없습니다")
+
+    used_rows = db.execute(
+        """
+        SELECT ws.exercise_id AS exercise_id, COUNT(*) AS set_count, MAX(s.date) AS last_date
+        FROM workout_set ws
+        JOIN workout_session s ON s.id = ws.session_id
+        JOIN exercise e ON e.id = ws.exercise_id
+        WHERE s.user_id = ? AND ws.machine_id = ? AND e.is_archived = 0
+        GROUP BY ws.exercise_id
+        ORDER BY last_date DESC, set_count DESC, ws.exercise_id
+        """,
+        (user.id, machine_id),
+    ).fetchall()
+    used_ids = {r["exercise_id"] for r in used_rows}
+
+    # 다른 사용자의 사용 이력은 "그런 적이 있다"는 사실만 추천 점수에 쓴다 (누가·얼마나는 내보내지 않는다)
+    used_by_anyone = {
+        r[0]
+        for r in db.execute(
+            "SELECT DISTINCT exercise_id FROM workout_set WHERE machine_id = ?", (machine_id,)
+        ).fetchall()
+    }
+    my_sets = {
+        r[0]: r[1]
+        for r in db.execute(
+            "SELECT ws.exercise_id, COUNT(*) FROM workout_set ws"
+            " JOIN workout_session s ON s.id = ws.session_id"
+            " WHERE s.user_id = ? GROUP BY ws.exercise_id",
+            (user.id,),
+        ).fetchall()
+    }
+    candidates = [
+        ExerciseInfo(
+            id=r["id"],
+            name_ko=r["name_ko"],
+            name_en=r["name_en"],
+            target=r["target"],
+            muscle=r["muscle"],
+            region=r["region"],
+            tags=frozenset(t.strip() for t in (r["tags"] or "").split(",") if t.strip()),
+            aliases=tuple(a.strip() for a in (r["aliases"] or "").split(",") if a.strip()),
+            my_sets=my_sets.get(r["id"], 0),
+            others_used=r["id"] in used_by_anyone,
+        )
+        for r in db.execute(
+            """
+            SELECT e.id, e.name_ko, e.name_en, e.tags, e.aliases,
+                   tp.code AS target, tp.muscle_code AS muscle, tp.region AS region
+            FROM exercise e JOIN target_path tp ON tp.id = e.default_target_id
+            WHERE e.is_archived = 0 AND (e.user_id IS NULL OR e.user_id = ?)
+            """,
+            (user.id,),
+        ).fetchall()
+        if r["id"] not in used_ids
+    ]
+    machine = MachineInfo(
+        brand=row["brand"], model=row["model"], name_ko=row["name_ko"],
+        target=row["target"], muscle=row["muscle"], region=row["region"],
+    )
+    return MachineExercisesOut(
+        machine=_machine_out(row),
+        used=[MachineExerciseUse(**dict(r)) for r in used_rows],
+        suggested=suggest(machine, candidates),
+    )
 
 
 # ---------- 내 머신 (§10.4) ----------

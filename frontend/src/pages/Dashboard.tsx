@@ -492,7 +492,7 @@ export default function Dashboard() {
         <Card>
           <CardTitle
             title="최근 PR"
-            note={`종목별 최고 중량 또는 e1RM(추정 1RM) 갱신 이력${prFeed.length ? ` · ${prFeed.length}건` : ""}`}
+            note={`종목·머신별 최고 중량 또는 e1RM(추정 1RM) 갱신 이력${prFeed.length ? ` · ${prFeed.length}건` : ""}`}
             collapsed={prCollapsed}
             onToggle={togglePr}
           />
@@ -506,13 +506,15 @@ export default function Dashboard() {
             <ul className="divide-y divide-hairline">
               {prFeed.map((pr, i) => (
                 <li
-                  key={`${pr.date}-${pr.exercise_id}-${pr.kind}-${i}`}
+                  key={`${pr.date}-${pr.exercise_id}-${pr.machine_id ?? 0}-${pr.kind}-${i}`}
                   className="flex items-center justify-between py-3 first:pt-0 last:pb-0"
                 >
                   <div className="min-w-0">
                     <p className="truncate text-[15px] font-bold">{pr.exercise_name_ko}</p>
-                    <p className="mt-0.5 text-[11px] font-medium text-muted dark:text-accent">
+                    <p className="mt-0.5 truncate text-[11px] font-medium text-muted dark:text-accent">
                       {pr.kind === "weight" ? "중량" : "e1RM"} PR · {formatShortDate(pr.date)}
+                      {/* §15.2 PR은 머신별 — 어느 머신의 기록인지 */}
+                      {pr.machine_name ? ` · ${pr.machine_name}` : ""}
                     </p>
                   </div>
                   <p className="ml-3 shrink-0 font-numeric text-[22px] font-bold">

@@ -17,7 +17,7 @@ from ..schemas import (
     SetUpdate,
 )
 from ..seed_data.targets import REGION_NAMES_KO
-from .catalog import target_id_or_422
+from .catalog import ensure_my_machine, machine_id_or_422, target_id_or_422
 
 router = APIRouter(prefix="/api", tags=["sessions"])
 
@@ -28,16 +28,19 @@ _REGION_ORDER = {region: i for i, region in enumerate(REGION_NAMES_KO)}
 
 def _pr_flags(db: sqlite3.Connection, row: sqlite3.Row) -> tuple[bool, bool]:
     # "이전" = (date, id) 순서 — 소급 입력·세션 date 이동에도 §6.3 정합. 같은 사용자 기록만.
+    # §15.2: 비교 범위는 (종목, 머신). SQL의 IS는 NULL끼리도 같다고 보므로 머신 없는 세트는
+    # 머신 없는 세트끼리만 비교된다. 그 머신으로 한 첫 세션은 베이스라인 — PR이 아니다.
     if row["is_warmup"] or row["weight_kg"] <= 0:
         return False, False
+    scope = (row["user_id"], row["exercise_id"], row["machine_id"])
     has_prev_session = db.execute(
         """
         SELECT 1 FROM set_volume sv
-        WHERE sv.user_id = ? AND sv.exercise_id = ? AND sv.session_id != ?
+        WHERE sv.user_id = ? AND sv.exercise_id = ? AND sv.machine_id IS ? AND sv.session_id != ?
           AND (sv.date < ? OR (sv.date = ? AND sv.set_id < ?))
         LIMIT 1
         """,
-        (row["user_id"], row["exercise_id"], row["session_id"], row["date"], row["date"], row["id"]),
+        (*scope, row["session_id"], row["date"], row["date"], row["id"]),
     ).fetchone()
     if has_prev_session is None:
         return False, False
@@ -46,10 +49,11 @@ def _pr_flags(db: sqlite3.Connection, row: sqlite3.Row) -> tuple[bool, bool]:
         SELECT MAX(sv.weight_kg) AS max_weight,
                MAX({E1RM_EXPR}) AS max_e1rm
         FROM set_volume sv
-        WHERE sv.user_id = ? AND sv.exercise_id = ? AND sv.is_warmup = 0 AND sv.weight_kg > 0
+        WHERE sv.user_id = ? AND sv.exercise_id = ? AND sv.machine_id IS ?
+          AND sv.is_warmup = 0 AND sv.weight_kg > 0
           AND (sv.date < ? OR (sv.date = ? AND sv.set_id < ?))
         """,
-        (row["user_id"], row["exercise_id"], row["date"], row["date"], row["id"]),
+        (*scope, row["date"], row["date"], row["id"]),
     ).fetchone()
     is_weight_pr = prev["max_weight"] is not None and row["weight_kg"] > prev["max_weight"]
     is_e1rm_pr = False
@@ -67,6 +71,9 @@ _TARGET_JOINS = """
 LEFT JOIN muscle_group t ON t.id = ws.target_id
 LEFT JOIN muscle_group dt ON dt.id = e.default_target_id
 """
+# §15.1 세트의 머신 (없으면 둘 다 NULL)
+_MACHINE_COLS = "ws.machine_id AS machine_id, m.name_ko AS machine_name"
+_MACHINE_JOIN = "LEFT JOIN machine m ON m.id = ws.machine_id"
 
 
 def _set_out(db: sqlite3.Connection, set_id: int) -> SetOut:
@@ -74,11 +81,12 @@ def _set_out(db: sqlite3.Connection, set_id: int) -> SetOut:
         f"""
         SELECT ws.id, ws.client_id, ws.session_id, ws.exercise_id, ws.set_index,
                ws.weight_kg, ws.reps, ws.is_warmup, ws.note, ws.created_at, ws.technique,
-               sv.volume_kg, sv.date, sv.user_id, {_TARGET_COLS}
+               sv.volume_kg, sv.date, sv.user_id, {_TARGET_COLS}, {_MACHINE_COLS}
         FROM workout_set ws
         JOIN set_volume sv ON sv.set_id = ws.id
         JOIN exercise e ON e.id = ws.exercise_id
         {_TARGET_JOINS}
+        {_MACHINE_JOIN}
         WHERE ws.id = ?
         """,
         (set_id,),
@@ -164,15 +172,16 @@ def create_set(
         if body.target is None
         else target_id_or_422(db, body.target)
     )
+    machine_id = machine_id_or_422(db, body.machine_id)
     try:
         # set_index 산출과 INSERT를 단일 문장으로 — 동시 요청 간 중복 index 방지
         cur = db.execute(
             """
             INSERT INTO workout_set (client_id, session_id, exercise_id, set_index,
-                                     weight_kg, reps, is_warmup, target_id, technique)
+                                     weight_kg, reps, is_warmup, target_id, technique, machine_id)
             VALUES (?, ?, ?,
                     (SELECT COALESCE(MAX(set_index), 0) + 1 FROM workout_set WHERE session_id = ?),
-                    ?, ?, ?, ?, ?)
+                    ?, ?, ?, ?, ?, ?)
             """,
             (
                 body.client_id,
@@ -184,6 +193,7 @@ def create_set(
                 int(body.is_warmup),
                 target_id,
                 body.technique,
+                machine_id,
             ),
         )
     except sqlite3.IntegrityError:
@@ -200,6 +210,7 @@ def create_set(
             raise HTTPException(status_code=409, detail="client_id가 이미 사용되었습니다")
         response.status_code = 200
         return _set_out(db, existing["id"])
+    ensure_my_machine(db, user.id, machine_id)
     db.commit()
     return _set_out(db, cur.lastrowid)
 
@@ -213,7 +224,10 @@ def update_set(
 ) -> SetOut:
     owned = _owned_set(db, user, set_id)
     data = body.model_dump(exclude_unset=True)
-    # target만 명시적 null 허용(= 종목 기본 타겟으로 복귀). NOT NULL 필드의 명시적 null은 무시.
+    # target(= 종목 기본 타겟으로 복귀)·technique·machine_id는 명시적 null 허용.
+    # NOT NULL 필드의 명시적 null은 무시.
+    if "machine_id" in data:
+        ensure_my_machine(db, user.id, machine_id_or_422(db, data["machine_id"]))
     if "target" in data:
         code = data.pop("target")
         if code is None:
@@ -354,11 +368,12 @@ def session_detail_for(db: sqlite3.Connection, user_id: int, session_id: int) ->
         f"""
         SELECT ws.id, ws.client_id, ws.exercise_id, ws.set_index, ws.weight_kg,
                ws.reps, ws.is_warmup, ws.note, ws.created_at, ws.technique, sv.volume_kg, e.name_ko,
-               dt.code AS exercise_default_target, {_TARGET_COLS}
+               dt.code AS exercise_default_target, {_TARGET_COLS}, {_MACHINE_COLS}
         FROM workout_set ws
         JOIN set_volume sv ON sv.set_id = ws.id
         JOIN exercise e ON e.id = ws.exercise_id
         {_TARGET_JOINS}
+        {_MACHINE_JOIN}
         WHERE ws.session_id = ?
         ORDER BY ws.set_index
         """,
@@ -389,6 +404,8 @@ def session_detail_for(db: sqlite3.Connection, user_id: int, session_id: int) ->
                 target=r["target"],
                 target_ko=r["target_ko"],
                 technique=r["technique"],
+                machine_id=r["machine_id"],
+                machine_name=r["machine_name"],
             )
         )
     return SessionDetail(

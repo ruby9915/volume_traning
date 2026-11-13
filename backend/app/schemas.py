@@ -202,6 +202,22 @@ class BrandCountOut(BaseModel):
     count: int
 
 
+class MachineExerciseUse(BaseModel):
+    """내가 그 머신으로 기록한 종목 하나 (§15.4)."""
+
+    exercise_id: int
+    set_count: int
+    last_date: str
+
+
+class MachineExercisesOut(BaseModel):
+    """GET /api/machines/{id}/exercises — 머신을 먼저 골랐을 때의 종목 후보 (§15.4)."""
+
+    machine: MachineOut
+    used: list[MachineExerciseUse]  # 내 사용 이력, 최근 순
+    suggested: list[int]  # 추천 종목 id, 점수 순 (used에 있는 종목은 빠진다)
+
+
 # ---------- Exercises (§10.3) ----------
 
 class ExerciseCreate(StrictModel):
@@ -212,7 +228,6 @@ class ExerciseCreate(StrictModel):
     default_target: TargetCode
     # §11.2 보조(협응) 근육 — 간접 볼륨 후보. 기본 타겟과 같은 코드는 422
     secondary_targets: list[TargetCode] = []
-    machine_id: int | None = None
     bodyweight_factor: float = Field(default=0, ge=0, le=1)
     load_multiplier: float = Field(default=1, gt=0)
     note: str | None = None
@@ -236,7 +251,6 @@ class ExerciseUpdate(StrictModel):
     tags: list[str] | None = None
     default_target: TargetCode | None = None
     secondary_targets: list[TargetCode] | None = None  # 빈 배열 = 전부 해제
-    machine_id: int | None = None  # 명시적 null = 머신 해제
     bodyweight_factor: float | None = Field(default=None, ge=0, le=1)
     load_multiplier: float | None = Field(default=None, gt=0)
     note: str | None = None
@@ -264,8 +278,10 @@ class ExerciseOut(BaseModel):
     default_target_ko: str
     secondary_targets: list[str]  # §11.2 보조 근육 코드 (정렬: 타겟 sort_order)
     secondary_targets_ko: list[str]
-    machine_id: int | None = None
-    machine_name: str | None = None
+    # §15.3 내가 이 종목에서 마지막으로 쓴 머신 — 기록 화면 머신 칩의 기본값. 종목의 속성이 아니라
+    # 요청한 사용자의 세트에서 나온다 (내 머신에서 뺀 머신의 세트는 건너뛴다). 없으면 둘 다 null
+    last_machine_id: int | None = None
+    last_machine_name: str | None = None
     bodyweight_factor: float
     load_multiplier: float
     is_builtin: bool
@@ -284,6 +300,9 @@ class LastRecordSet(BaseModel):
 class LastRecordOut(BaseModel):
     session_id: int
     session_date: str
+    # §15.3 이 기록의 머신 (machine 파라미터를 줬으면 그 머신, 안 줬으면 그 세션 마지막 세트의 머신)
+    machine_id: int | None = None
+    machine_name: str | None = None
     sets: list[LastRecordSet]
 
 
@@ -313,6 +332,8 @@ class SetCreate(StrictModel):
     new_session: bool = False
     # §10.2 세트 타겟 — 미지정/null = 종목 기본 타겟 (유효 code만, 위반 422)
     target: TargetCode | None = None
+    # §15.1 세트를 수행한 머신 — 미지정/null = 머신 없음 (없는 id는 422)
+    machine_id: int | None = None
     # §3.7-B 세션 직접 귀속 — 지정 시 lazy 생성 생략, 세션 date와 body date
     # 불일치·세션 부재는 422
     session_id: int | None = None
@@ -332,6 +353,8 @@ class SetUpdate(StrictModel):
     target: TargetCode | None = None
     # §14 — 명시적 null = 일반 세트로 되돌리기
     technique: Technique | None = None
+    # §15.1 — 명시적 null = 머신 없음으로
+    machine_id: int | None = None
 
 
 class SetOut(BaseModel):
@@ -352,6 +375,8 @@ class SetOut(BaseModel):
     target: str
     target_ko: str
     technique: str | None = None  # §14
+    machine_id: int | None = None  # §15.1 (null = 머신 없음)
+    machine_name: str | None = None
 
 
 # ---------- Sessions ----------
@@ -383,6 +408,8 @@ class SessionSetOut(BaseModel):
     target: str
     target_ko: str
     technique: str | None = None  # §14
+    machine_id: int | None = None  # §15.1
+    machine_name: str | None = None
 
 
 class SessionExerciseGroup(BaseModel):
@@ -457,6 +484,9 @@ class PrEvent(BaseModel):
     value: float
     weight_kg: float
     reps: int
+    # §15.2 PR은 (종목, 머신) 범위 — 이 갱신이 일어난 머신 (null = 머신 없이 한 기록끼리의 PR)
+    machine_id: int | None = None
+    machine_name: str | None = None
 
 
 class FrequencyStats(BaseModel):

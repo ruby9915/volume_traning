@@ -21,6 +21,7 @@ E1RM_EXPR = (
 
 # set_volume VIEW 단일 정의 (§3.2·§10). v2: user_id 패스스루 + 체중 조회가 세션 소유자 기준,
 # target_id 패스스루 (볼륨은 세트의 타겟에 100% 귀속 — 집계는 target_path와 JOIN).
+# v9 (§15): machine_id 패스스루 — PR은 (사용자, 종목, 머신) 범위로 센다. 볼륨 식은 그대로.
 SET_VOLUME_VIEW = """
 CREATE VIEW IF NOT EXISTS set_volume AS
 SELECT
@@ -33,6 +34,7 @@ SELECT
     ws.weight_kg    AS weight_kg,
     ws.reps         AS reps,
     ws.target_id    AS target_id,
+    ws.machine_id   AS machine_id,
     ( ws.weight_kg
       + e.bodyweight_factor * COALESCE(
           (SELECT bw.weight_kg FROM body_weight_log bw
@@ -154,9 +156,11 @@ CREATE TABLE IF NOT EXISTS exercise (
     base_movement     TEXT,
     aliases           TEXT,
     tags              TEXT,
-    -- §10.3: 기본 타겟 (세트 저장 시 target 미지정이면 이 값), 소유자(NULL = 내장 공용), 머신
+    -- §10.3: 기본 타겟 (세트 저장 시 target 미지정이면 이 값), 소유자(NULL = 내장 공용)
     default_target_id INTEGER REFERENCES muscle_group(id),
     user_id           INTEGER REFERENCES user(id),
+    -- v9(§15)부터 쓰지 않는다 — 머신은 세트(workout_set.machine_id)에 붙는다. 컬럼은 v8 코드로
+    -- 되돌릴 때 같은 DB를 그대로 열 수 있게 남겨 둔다 (읽지도 쓰지도 않음).
     machine_id        INTEGER REFERENCES machine(id)
 );
 
@@ -167,7 +171,7 @@ CREATE TABLE IF NOT EXISTS favorite (
     PRIMARY KEY (user_id, exercise_id)
 );
 
--- §10.4 내 머신 — 아카이브(machine)에서 골라 담은 사용자별 목록. 종목 폼은 이 목록만 보여준다.
+-- §10.4 내 머신 — 아카이브(machine)에서 골라 담은 사용자별 목록. 머신 칩·"머신으로 시작"은 이 목록만 보여준다.
 CREATE TABLE IF NOT EXISTS user_machine (
     user_id    INTEGER NOT NULL REFERENCES user(id) ON DELETE CASCADE,
     machine_id INTEGER NOT NULL REFERENCES machine(id) ON DELETE CASCADE,
@@ -206,7 +210,9 @@ CREATE TABLE IF NOT EXISTS workout_set (
     -- §10.2 세트의 타겟 (앱이 항상 채운다 — NULL은 마이그레이션 중간 상태에서만)
     target_id   INTEGER REFERENCES muscle_group(id),
     -- §14 운동 방식 (드롭·슈퍼세트·컴파운드·자이언트·레스트포즈). NULL = 일반 세트. 볼륨 계산 무관.
-    technique   TEXT CHECK (technique IS NULL OR technique IN ('drop', 'superset', 'compound', 'giant', 'rest_pause'))
+    technique   TEXT CHECK (technique IS NULL OR technique IN ('drop', 'superset', 'compound', 'giant', 'rest_pause')),
+    -- §15 세트를 수행한 머신. NULL = 머신 없음(프리웨이트·미기록). PR·지난 기록의 범위가 된다.
+    machine_id  INTEGER REFERENCES machine(id)
 );
 CREATE INDEX IF NOT EXISTS idx_set_session  ON workout_set(session_id);
 CREATE INDEX IF NOT EXISTS idx_set_exercise ON workout_set(exercise_id);
@@ -220,7 +226,7 @@ CREATE TABLE IF NOT EXISTS body_weight_log (
 );
 """
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 # v1 → v2 (§3.6): 당시 추가된 속성 6컬럼. v4에서 4개는 tags로 흡수·삭제된다.
 _V2_ATTR_COLUMNS = ("base_movement", "equipment", "support", "grip", "angle", "aliases")
@@ -273,6 +279,8 @@ def _migrate_structure(conn: sqlite3.Connection) -> int:
       사용자가 이미 종목에 연결해 둔 머신을 내 머신으로 등록한다.
     v6→v7 (§13 프로필·친구): user.bio/avatar/share_with_friends ALTER, friendship 테이블(DDL). 데이터 단계 없음.
     v7→v8 (§14 운동 방식): workout_set.technique ALTER. 데이터 단계 없음.
+    v8→v9 (§15 세트의 머신): workout_set.machine_id ALTER. 데이터 단계(_apply_v9_data)가 종목에
+      연결돼 있던 머신을 그 종목의 세트로 옮긴다. exercise.machine_id는 지우지 않는다(v8 코드 호환).
     """
     version = conn.execute("PRAGMA user_version").fetchone()[0]
     if version >= SCHEMA_VERSION:
@@ -362,6 +370,10 @@ def _migrate_structure(conn: sqlite3.Connection) -> int:
             " technique IN ('drop', 'superset', 'compound', 'giant', 'rest_pause'))"
         )
 
+    # v8→v9 (§15): 세트의 머신
+    if "machine_id" not in _columns(conn, "workout_set"):
+        conn.execute("ALTER TABLE workout_set ADD COLUMN machine_id INTEGER REFERENCES machine(id)")
+
     if "user_id" not in _columns(conn, "body_weight_log"):
         # UNIQUE(date) → UNIQUE(user_id, date): 제약 변경은 테이블 재구축이 정석
         conn.execute(
@@ -393,6 +405,8 @@ def _ensure_views(conn: sqlite3.Connection) -> None:
     conn.execute(SET_INDIRECT_VIEW)
     # v4 컬럼(user_id)에 걸리는 인덱스는 마이그레이션 뒤에만 만들 수 있다 (DDL 단계엔 컬럼이 없을 수 있음)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_session_user ON workout_session(user_id, date)")
+    # v9: "이 머신으로 기록한 종목" 조회용 (§15.4)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_set_machine ON workout_set(machine_id)")
 
 
 def _normalize_name(name: str) -> str:
@@ -572,6 +586,62 @@ def _apply_v6_data(conn: sqlite3.Connection) -> list[str]:
     return [f"user machines backfilled: {cur.rowcount}"] if cur.rowcount else []
 
 
+# v8에서 머신 이름으로 만든 커스텀 종목 → 같은 동작의 내장 종목 (§15.6, 사용자 위임 결정 2026-11-13).
+# "종목은 동작 하나, 머신은 세트마다"가 되면서 머신 이름 종목은 내장 종목 + 세트의 머신으로 표현된다.
+V9_MACHINE_EXERCISE_MERGE: dict[str, str] = {
+    "해머 mts 로우": "아이소 래터럴 로우",
+}
+
+
+def _apply_v9_data(conn: sqlite3.Connection) -> list[str]:
+    """v9 데이터 단계 (§15.6, 한 번).
+
+    1. 종목에 연결돼 있던 머신을 그 종목의 세트로 옮긴다 (세트에 머신이 없는 것만).
+    2. V9_MACHINE_EXERCISE_MERGE의 커스텀 종목을 내장 종목으로 합친다 — 세트·즐겨찾기를 옮기고
+       커스텀 행을 지운다. 체중 계수·중량 배수가 다르면 볼륨이 달라지므로 합치지 않는다.
+    """
+    log: list[str] = []
+    cur = conn.execute(
+        "UPDATE workout_set SET machine_id ="
+        " (SELECT e.machine_id FROM exercise e WHERE e.id = workout_set.exercise_id)"
+        " WHERE machine_id IS NULL"
+        " AND exercise_id IN (SELECT id FROM exercise WHERE machine_id IS NOT NULL)"
+    )
+    if cur.rowcount:
+        log.append(f"set machines backfilled: {cur.rowcount}")
+
+    for custom_name, builtin_name in V9_MACHINE_EXERCISE_MERGE.items():
+        src = conn.execute(
+            "SELECT id, bodyweight_factor, load_multiplier FROM exercise"
+            " WHERE name_ko = ? AND is_builtin = 0",
+            (custom_name,),
+        ).fetchone()
+        dst = conn.execute(
+            "SELECT id, bodyweight_factor, load_multiplier FROM exercise"
+            " WHERE name_ko = ? AND is_builtin = 1",
+            (builtin_name,),
+        ).fetchone()
+        if src is None or dst is None:
+            continue
+        if (src["bodyweight_factor"], src["load_multiplier"]) != (
+            dst["bodyweight_factor"], dst["load_multiplier"],
+        ):
+            log.append(f"machine exercise kept (volume factors differ): {custom_name}")
+            continue
+        moved = conn.execute(
+            "UPDATE workout_set SET exercise_id = ? WHERE exercise_id = ?", (dst["id"], src["id"])
+        ).rowcount
+        conn.execute(
+            "INSERT OR IGNORE INTO favorite (user_id, exercise_id, sort_order)"
+            " SELECT user_id, ?, sort_order FROM favorite WHERE exercise_id = ?",
+            (dst["id"], src["id"]),
+        )
+        conn.execute("DELETE FROM favorite WHERE exercise_id = ?", (src["id"],))
+        conn.execute("DELETE FROM exercise WHERE id = ?", (src["id"],))
+        log.append(f"machine exercise merged: {custom_name} -> {builtin_name} ({moved} sets)")
+    return log
+
+
 def init_db(db_path: str | None = None) -> list[str]:
     """스키마 생성·마이그레이션·시드. 반환: 마이그레이션 로그 (테스트·기동 로그용)."""
     conn = _connect(db_path or get_settings().DB_PATH)
@@ -588,6 +658,8 @@ def init_db(db_path: str | None = None) -> list[str]:
             log += _apply_v5_data(conn)
         if from_version < 6:
             log += _apply_v6_data(conn)
+        if from_version < 9:
+            log += _apply_v9_data(conn)
         if from_version < SCHEMA_VERSION:
             conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         conn.commit()

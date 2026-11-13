@@ -103,7 +103,7 @@ function SessionDetailView({ userId, session }: { userId: number; session: Sessi
           </div>
           <p className="mt-0.5 font-numeric text-sm text-muted">
             {g.sets
-              .map((s) => `${s.is_warmup ? "W " : ""}${s.technique ? `[${TECHNIQUE_NAMES_KO[s.technique]}] ` : ""}${s.weight_kg}×${s.reps}${s.target !== g.default_target ? `(${nameOf(s.target)})` : ""}`)
+              .map((s) => `${s.is_warmup ? "W " : ""}${s.technique ? `[${TECHNIQUE_NAMES_KO[s.technique]}] ` : ""}${s.weight_kg}×${s.reps}${s.target !== g.default_target ? `(${nameOf(s.target)})` : ""}${s.machine_name ? ` @${s.machine_name}` : ""}`)
               .join(" · ")}
           </p>
         </div>

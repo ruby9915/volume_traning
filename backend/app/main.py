@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import mimetypes
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -15,7 +16,11 @@ from .routers import admin, analytics, catalog, exercises, friends, sessions, st
 
 logger = logging.getLogger("app")
 
-FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
+# 운영은 항상 frontend/dist. 배포 전 검증용 테스트 서버(DB 사본, 다른 포트)만 FRONTEND_DIST
+# 환경변수로 임시 빌드 폴더를 가리킨다 — dist에 빌드하면 운영 서버가 그 즉시 새 화면을 서빙하기 때문.
+FRONTEND_DIST = Path(
+    os.environ.get("FRONTEND_DIST") or Path(__file__).resolve().parents[2] / "frontend" / "dist"
+)
 
 # Windows mimetypes 테이블에 woff2가 없어 FileResponse가 text/plain으로 서빙되는 것 방지
 mimetypes.add_type("font/woff2", ".woff2")

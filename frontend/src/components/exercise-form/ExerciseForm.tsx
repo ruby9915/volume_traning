@@ -1,10 +1,11 @@
-// §10.3 종목 생성·수정 폼 (v2) — 이름·계열·태그·기본 타겟·머신·고급(체중 계수·중량 배수).
+// §10.3 종목 생성·수정 폼 (v2) — 이름·계열·태그·기본 타겟·고급(체중 계수·중량 배수).
 // 종목 선택 시트의 "새 종목 만들기"와 종목 관리 화면이 공용으로 쓴다.
 // 속성→부위/계수 자동 유도 없음, 이름 자동 조합 없음 (§3.6 반증·사용자 결정).
+// §15: 머신은 종목이 아니라 세트의 속성이라 이 폼에는 머신 칸이 없다. 머신을 고른 뒤 새 종목을
+// 만들 때는 호출측이 머신의 이름·참고 타겟으로 values를 미리 채워서 넘긴다(고칠 수 있다).
 import { useMemo, useState } from "react";
 import type { Exercise, ExerciseCreateRequest, TargetCode } from "../../api/types";
 import { useTargets } from "../../hooks/useTargets";
-import MachineField from "../machine/MachineField";
 import TargetSheet from "../target/TargetSheet";
 import { distinctBaseMovements, distinctTags, parseTags } from "./attributeUtils";
 
@@ -14,8 +15,6 @@ export interface ExerciseFormValues {
   tags: string[];
   default_target: TargetCode | null;
   secondary_targets: TargetCode[]; // §11.2 보조 근육 (간접 볼륨 후보)
-  machine_id: number | null;
-  machine_label: string | null; // 표시용 (편집 시 machine_name) — 요청 본문에는 안 들어간다
   bodyweight_factor: string;
   load_multiplier: string;
 }
@@ -28,8 +27,6 @@ export const EMPTY_FORM: ExerciseFormValues = {
   tags: [],
   default_target: null,
   secondary_targets: [],
-  machine_id: null,
-  machine_label: null,
   bodyweight_factor: "0",
   load_multiplier: "1",
 };
@@ -41,8 +38,6 @@ export function formFromExercise(ex: Exercise): ExerciseFormValues {
     tags: ex.tags,
     default_target: ex.default_target,
     secondary_targets: ex.secondary_targets,
-    machine_id: ex.machine_id,
-    machine_label: ex.machine_name ?? null,
     bodyweight_factor: String(ex.bodyweight_factor),
     load_multiplier: String(ex.load_multiplier),
   };
@@ -67,7 +62,6 @@ export function validateForm(v: ExerciseFormValues): ExerciseCreateRequest | str
     tags: v.tags,
     default_target: v.default_target,
     secondary_targets: secondary,
-    machine_id: v.machine_id,
     bodyweight_factor: bw,
     load_multiplier: lm,
   };
@@ -279,12 +273,6 @@ export default function ExerciseForm({
       />
 
       <TagBox tags={values.tags} suggestions={tagOptions} onChange={(tags) => set({ tags })} />
-
-      <MachineField
-        value={values.machine_id}
-        label={values.machine_label}
-        onChange={(m) => set({ machine_id: m ? m.id : null, machine_label: m ? m.name_ko : null })}
-      />
 
       <div>
         <button type="button" className="touch-target text-sm text-muted" onClick={onToggleAdvanced}>

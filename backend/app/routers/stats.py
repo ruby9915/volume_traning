@@ -117,8 +117,12 @@ def _best_set(sets: list[sqlite3.Row], column: str) -> sqlite3.Row | None:
 def _pr_events(
     db: sqlite3.Connection, user_id: int, exercise_id: int | None = None
 ) -> tuple[list[dict], dict[int, dict]]:
-    """§6.3: on-the-fly, strictly greater, 종목의 첫 세션은 베이스라인,
-    PR 히스토리는 하루×종목×종류당 최고 1건. weight=0·웜업 세트 제외. 사용자 범위."""
+    """§6.3: on-the-fly, strictly greater, weight=0·웜업 세트 제외. 사용자 범위.
+
+    §15.2: PR(갱신 이력)은 **(종목, 머신) 범위**로 센다 — 그 머신으로 한 첫 세션은 베이스라인,
+    하루×종목×머신×종류당 최고 1건. 머신 없는 세트는 머신 없는 세트끼리 한 범위다.
+    반환의 bests는 종목별 **전체 최고 기록**(머신 무관, 그 값을 처음 달성한 날짜)이다.
+    """
     where = "sv.user_id = ? AND sv.is_warmup = 0 AND sv.weight_kg > 0"
     params: list = [user_id]
     if exercise_id is not None:
@@ -127,14 +131,16 @@ def _pr_events(
     rows = db.execute(
         f"""
         SELECT sv.exercise_id AS exercise_id, e.name_ko AS name_ko,
+               sv.machine_id AS machine_id, m.name_ko AS machine_name,
                sv.date AS date, sv.session_id AS session_id,
                MAX(sv.weight_kg) AS best_weight,
                MAX({E1RM_EXPR}) AS best_e1rm
         FROM set_volume sv
         JOIN exercise e ON e.id = sv.exercise_id
+        LEFT JOIN machine m ON m.id = sv.machine_id
         WHERE {where}
-        GROUP BY sv.exercise_id, sv.session_id
-        ORDER BY sv.exercise_id, sv.date, sv.session_id
+        GROUP BY sv.exercise_id, sv.machine_id, sv.session_id
+        ORDER BY sv.exercise_id, sv.machine_id, sv.date, sv.session_id
         """,
         params,
     ).fetchall()
@@ -142,7 +148,8 @@ def _pr_events(
     # PR을 만든 세트의 실제 중량·횟수를 함께 싣기 위한 세트 단위 조회 (집계는 위 쿼리 그대로)
     detail_rows = db.execute(
         f"""
-        SELECT sv.exercise_id AS exercise_id, sv.session_id AS session_id,
+        SELECT sv.exercise_id AS exercise_id, sv.machine_id AS machine_id,
+               sv.session_id AS session_id,
                sv.weight_kg AS weight_kg, sv.reps AS reps,
                {E1RM_EXPR} AS e1rm
         FROM set_volume sv
@@ -151,21 +158,25 @@ def _pr_events(
         """,
         params,
     ).fetchall()
-    sets_by_session: dict[tuple[int, int], list[sqlite3.Row]] = {}
+    sets_by_session: dict[tuple[int, int | None, int], list[sqlite3.Row]] = {}
     for row in detail_rows:
         sets_by_session.setdefault(
-            (row["exercise_id"], row["session_id"]), []
+            (row["exercise_id"], row["machine_id"], row["session_id"]), []
         ).append(row)
 
-    # 세션 순으로 갱신 판정 후 하루×종목×종류 1건으로 축약 (값은 단조 증가 → 뒤가 그날 최고)
-    by_day: dict[tuple[int, str, str], dict] = {}
+    # 범위(종목, 머신) 안에서 세션 순으로 갱신 판정 후 하루×범위×종류 1건으로 축약
+    # (범위 안에서 값은 단조 증가 → 뒤가 그날 최고)
+    by_day: dict[tuple[int, int | None, str, str], dict] = {}
+    scope_best: dict[tuple[int, int | None, str], float] = {}
     bests: dict[int, dict] = {}
+    best_order: dict[tuple[int, str], tuple[str, int]] = {}  # 전체 최고의 (date, session_id)
     for row in rows:
+        scope = (row["exercise_id"], row["machine_id"])
         ex = bests.setdefault(
             row["exercise_id"],
             {"name_ko": row["name_ko"], "weight": None, "e1rm": None},
         )
-        sets = sets_by_session.get((row["exercise_id"], row["session_id"]), [])
+        sets = sets_by_session.get((*scope, row["session_id"]), [])
         for kind, value, column in (
             ("weight", row["best_weight"], "weight_kg"),
             ("e1rm", row["best_e1rm"], "e1rm"),
@@ -174,15 +185,29 @@ def _pr_events(
                 continue
             src = _best_set(sets, column)
             detail = (src["weight_kg"], src["reps"]) if src is not None else (value, 0)
-            best = ex[kind]
-            if best is None:
-                # 첫 세션 = 베이스라인 — PR 아님
+
+            # 종목 전체 최고: 더 큰 값, 같으면 먼저 달성한 쪽 (범위를 넘나들어도 결정적)
+            order = (row["date"], row["session_id"])
+            overall = ex[kind]
+            if (
+                overall is None
+                or value > overall[0]
+                or (value == overall[0] and order < best_order[(row["exercise_id"], kind)])
+            ):
                 ex[kind] = (value, row["date"], *detail)
-            elif value > best[0]:
-                ex[kind] = (value, row["date"], *detail)
-                by_day[(row["exercise_id"], row["date"], kind)] = {
+                best_order[(row["exercise_id"], kind)] = order
+
+            prev = scope_best.get((*scope, kind))
+            if prev is None:
+                # 그 머신으로 한 첫 세션 = 베이스라인 — PR 아님
+                scope_best[(*scope, kind)] = value
+            elif value > prev:
+                scope_best[(*scope, kind)] = value
+                by_day[(*scope, row["date"], kind)] = {
                     "exercise_id": row["exercise_id"],
                     "name_ko": row["name_ko"],
+                    "machine_id": row["machine_id"],
+                    "machine_name": row["machine_name"],
                     "kind": kind,
                     "value": value,
                     "date": row["date"],
@@ -203,7 +228,9 @@ def _pr_record(best: tuple | None) -> PrRecord | None:
 
 def _feed(events: list[dict], limit: int) -> list[PrEvent]:
     ordered = sorted(
-        events, key=lambda e: (e["date"], e["exercise_id"], e["kind"]), reverse=True
+        events,
+        key=lambda e: (e["date"], e["exercise_id"], e["kind"], e["machine_id"] or 0),
+        reverse=True,
     )
     return [
         PrEvent(
@@ -214,6 +241,8 @@ def _feed(events: list[dict], limit: int) -> list[PrEvent]:
             value=round(e["value"], 2),
             weight_kg=e["weight_kg"],
             reps=e["reps"],
+            machine_id=e["machine_id"],
+            machine_name=e["machine_name"],
         )
         for e in ordered[:limit]
     ]
@@ -633,7 +662,7 @@ CSV_COLUMNS = [
     "reps", "is_warmup", "technique", "volume_kg",
     # §10.2 세트 타겟 3단계 (세부 코드 / 근육 코드 / 부위)
     "target", "target_muscle", "target_region", "note",
-    # §10.3 계열·태그·머신
+    # §10.3 계열·태그, §15 그 세트를 수행한 머신
     "base_movement", "tags", "machine",
 ]
 
@@ -654,7 +683,7 @@ def export_csv(
         JOIN workout_set ws ON ws.id = sv.set_id
         JOIN exercise e ON e.id = sv.exercise_id
         LEFT JOIN target_path tp ON tp.id = sv.target_id
-        LEFT JOIN machine m ON m.id = e.machine_id
+        LEFT JOIN machine m ON m.id = ws.machine_id
         WHERE sv.user_id = ?
         ORDER BY sv.date, sv.session_id, ws.set_index
         """,

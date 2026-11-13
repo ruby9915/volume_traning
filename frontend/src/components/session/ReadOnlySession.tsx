@@ -1,13 +1,20 @@
 // §13 친구 세션 읽기 전용 뷰 — 종목별 세트 나열만. 편집 화면(SessionDetail)의 조작은 전혀 없다.
 import { useQuery } from "@tanstack/react-query";
 import { fetchSession } from "../../api/client";
-import { TECHNIQUE_NAMES_KO } from "../../api/types";
+import { TECHNIQUE_NAMES_KO, type SessionExerciseGroup } from "../../api/types";
 import { useTargets } from "../../hooks/useTargets";
 import { formatKoreanDate } from "../../utils/date";
 import { fmtInt } from "../../utils/format";
 import Card from "../Card";
 import ErrorRetry from "../ErrorRetry";
 import Spinner from "../Spinner";
+
+/** 그룹의 세트에 쓰인 머신 이름들 (등장 순, 중복 제거) — 없으면 빈 문자열 */
+export function machineNamesOf(g: SessionExerciseGroup): string {
+  const names: string[] = [];
+  for (const x of g.sets) if (x.machine_name && !names.includes(x.machine_name)) names.push(x.machine_name);
+  return names.join(" · ");
+}
 
 export default function ReadOnlySession({ sessionId, userId }: { sessionId: number; userId: number }) {
   const { nameOf } = useTargets();
@@ -37,6 +44,8 @@ export default function ReadOnlySession({ sessionId, userId }: { sessionId: numb
               <span className="font-semibold">{g.name_ko}</span>
               <span className="font-numeric text-xs text-muted">{g.sets.length}세트</span>
             </div>
+            {/* §15.1 이 종목에 쓴 머신 (세트마다 다르면 모두 나열) */}
+            {machineNamesOf(g) ? <p className="truncate text-[11px] text-faint">{machineNamesOf(g)}</p> : null}
             <p className="mt-0.5 font-numeric text-sm text-muted">
               {g.sets
                 .map((x) => `${x.is_warmup ? "W " : ""}${x.technique ? `[${TECHNIQUE_NAMES_KO[x.technique]}] ` : ""}${x.weight_kg}×${x.reps}${x.target !== g.default_target ? `(${nameOf(x.target)})` : ""}`)

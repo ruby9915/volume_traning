@@ -72,6 +72,30 @@ New-NetFirewallRule -DisplayName "vite-dev" -Direction Inbound -Protocol TCP -Lo
 frontend 빌드(`npm run build`) → `backend`에서 `uv run uvicorn ... --port 8000` (reload 없음) 순으로 실행한다.
 코드 수정 반영 = 이 스크립트 재실행 (빌드 + 서버 재시작).
 
+### 배포 전 검증 (테스트 서버, SETTING.MD §15.9)
+
+운영 서버는 `frontend\dist`를 그대로 서빙하므로 **거기에 빌드하는 순간 새 화면이 나간다.** 스키마가 바뀌는 변경은
+운영에 올리기 전에 임시 빌드 + 운영 DB 사본으로 8010 포트에서 먼저 확인한다.
+
+```powershell
+# 1) 임시 폴더에 빌드
+cd frontend; npx tsc -b; npx vite build --outDir $env:TEMP\vt-dist; cd ..
+
+# 2) 운영 DB 사본 (서버 실행 중에도 안전 — 읽기 전용으로 열어 backup)
+cd backend
+.venv\Scripts\python.exe -c "import sqlite3,os; s=sqlite3.connect('file:data/app.db?mode=ro',uri=True); d=sqlite3.connect(os.path.expandvars(r'%TEMP%\vt-test.db')); s.backup(d)"
+
+# 3) 테스트 서버 — DB_PATH는 사본, BACKUP_DIR은 임시 폴더, 화면은 임시 빌드
+$env:DB_PATH = "$env:TEMP\vt-test.db"; $env:BACKUP_DIR = "$env:TEMP\vt-backup"; $env:FRONTEND_DIST = "$env:TEMP\vt-dist"
+.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8010
+```
+
+- **`DB_PATH` 없이 새 uvicorn을 띄우지 말 것.** 기동 시 `init_db`가 포트를 열기 전에 DB를 마이그레이션하므로 운영 DB가 바뀐다.
+- **`BACKUP_DIR`도 반드시 다른 폴더로 준다.** PowerShell에서 `$env:BACKUP_DIR = ""`는 변수를 지우는 것이라 `.env`의 진짜 백업
+  폴더가 쓰이고, 기동 직후 스냅샷이 그날의 운영 백업(`app-YYYYMMDD.db`)을 테스트 사본으로 덮어쓴다.
+- 검증이 끝나면 그 셸을 닫는다(환경변수가 남은 셸에서 운영 스크립트를 돌리지 않는다).
+- 운영 반영 직전에 스냅샷: 위 2)와 같은 방법으로 `backend\data\app-pre-v<N>-<날짜>.db`를 만들고 백업 폴더에도 복사한다.
+
 ### 자동 시작 등록 (관리자 PowerShell 필수)
 
 ```powershell

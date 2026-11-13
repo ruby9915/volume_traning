@@ -27,7 +27,7 @@ export function distinctTags(exercises: Exercise[]): string[] {
   return [...count.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], "ko")).map(([t]) => t);
 }
 
-/** 검색 haystack: name_ko / name_en / aliases / 계열 / 태그 / 머신 (§10.3 검색) */
+/** 검색 haystack: name_ko / name_en / aliases / 계열 / 태그 / 내가 마지막으로 쓴 머신 (§10.3 검색, §15.3) */
 export function exerciseMatchesQuery(ex: Exercise, query: string): boolean {
   const q = query.trim().toLowerCase();
   if (!q) return true;
@@ -35,7 +35,7 @@ export function exerciseMatchesQuery(ex: Exercise, query: string): boolean {
     ex.name_ko,
     ex.name_en,
     ex.base_movement,
-    ex.machine_name,
+    ex.last_machine_name,
     ...ex.tags,
     ...(ex.aliases ? ex.aliases.split(",") : []),
   ];

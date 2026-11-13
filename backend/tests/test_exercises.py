@@ -69,8 +69,9 @@ def test_create_validation_422(auth_client):
         "/api/exercises",
         json={"name_ko": "테스트 종목", "default_target": "chest", "tags": [f"t{i}" for i in range(21)]},
     ).status_code == 422
+    # §15: 머신은 종목이 아니라 세트의 속성 — 종목 본문의 machine_id는 받지 않는다
     assert auth_client.post(
-        "/api/exercises", json={"name_ko": "테스트 종목", "default_target": "chest", "machine_id": 9999}
+        "/api/exercises", json={"name_ko": "테스트 종목", "default_target": "chest", "machine_id": 1}
     ).status_code == 422
 
 

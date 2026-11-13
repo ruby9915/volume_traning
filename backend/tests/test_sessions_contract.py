@@ -25,12 +25,14 @@ EXERCISE_GROUP_KEYS = {"exercise_id", "name_ko", "default_target", "sets"}
 SESSION_SET_KEYS = {
     "id", "client_id", "set_index", "weight_kg", "reps", "is_warmup", "technique",
     "volume_kg", "note", "created_at", "target", "target_ko",
+    "machine_id", "machine_name",  # §15.1
 }
 # types.ts WorkoutSet — POST /api/sets(201·멱등 200)·PATCH /api/sets/{id} 응답
 WORKOUT_SET_KEYS = {
     "id", "client_id", "session_id", "exercise_id", "set_index", "weight_kg",
     "reps", "is_warmup", "technique", "note", "created_at", "volume_kg",
     "is_weight_pr", "is_e1rm_pr", "target", "target_ko",
+    "machine_id", "machine_name",  # §15.1
 }
 REGIONS = set(REGION_NAMES_KO)
 

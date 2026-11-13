@@ -2,7 +2,7 @@
 
 fixture(app/client/auth_client/user_client/db)는 conftest.py, 일반 함수는 이 모듈.
 DB 직접 삽입 헬퍼는 v4 규칙을 따른다: 세션·체중은 user_id(기본 관리자), 세트는 target_id
-(기본 = 종목 기본 타겟).
+(기본 = 종목 기본 타겟). v9: 세트의 machine_id(기본 = 머신 없음).
 """
 
 import sqlite3
@@ -64,8 +64,16 @@ def add_session(db: sqlite3.Connection, date: str, user_id: int | None = None) -
     return cur.lastrowid
 
 
+def machine_id(db: sqlite3.Connection, model: str) -> int:
+    """시드 카탈로그의 머신 id (모델명 기준 — 브랜드 간 같은 모델명은 가장 앞 행)."""
+    row = db.execute("SELECT id FROM machine WHERE model = ? ORDER BY id LIMIT 1", (model,)).fetchone()
+    assert row is not None, f"seed machine missing: {model}"
+    return row[0]
+
+
 def add_set(
-    db, session_id, exercise_id, weight, reps, warmup=0, note=None, target: str | None = None
+    db, session_id, exercise_id, weight, reps, warmup=0, note=None, target: str | None = None,
+    machine: int | None = None,
 ) -> int:
     """DB 직접 삽입 (API 우회) — set_index는 세션 내 다음 번호, target 기본 = 종목 기본 타겟."""
     idx = db.execute(
@@ -81,9 +89,9 @@ def add_set(
     )
     cur = db.execute(
         "INSERT INTO workout_set"
-        " (session_id, exercise_id, set_index, weight_kg, reps, is_warmup, note, target_id)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        (session_id, exercise_id, idx, weight, reps, warmup, note, tid),
+        " (session_id, exercise_id, set_index, weight_kg, reps, is_warmup, note, target_id, machine_id)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (session_id, exercise_id, idx, weight, reps, warmup, note, tid, machine),
     )
     db.commit()
     return cur.lastrowid

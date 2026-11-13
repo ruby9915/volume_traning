@@ -1,7 +1,8 @@
 """Exercise 응답 계약(frontend/src/api/types.ts의 Exercise) 회귀 테스트 (v2).
 
-계열·태그·기본 타겟·머신·소유 필드가 목록·생성·수정·복원 응답 전부에서 항상 존재해야 한다
+계열·태그·기본 타겟·마지막 머신·소유 필드가 목록·생성·수정·복원 응답 전부에서 항상 존재해야 한다
 (프론트가 undefined를 읽는 사고 방지). 키 집합만 보는 구조 검증 + write 경로의 최소 동작 검증.
+§15: 머신은 세트의 속성이라 종목 응답에는 `last_machine_*`(내가 마지막으로 쓴 머신)만 있다.
 """
 
 from app.seed_data.exercises import EXERCISES
@@ -9,7 +10,8 @@ from app.seed_data.exercises import EXERCISES
 EXERCISE_KEYS = {
     "id", "name_ko", "name_en", "base_movement", "tags", "default_target", "default_target_ko",
     "secondary_targets", "secondary_targets_ko",  # §11.2
-    "machine_id", "machine_name", "bodyweight_factor", "load_multiplier",
+    "last_machine_id", "last_machine_name",  # §15.3
+    "bodyweight_factor", "load_multiplier",
     "is_builtin", "is_archived", "is_own", "note", "aliases",
 }
 MACHINE_KEYS = {"id", "brand", "model", "name_ko", "target"}
@@ -45,7 +47,7 @@ def test_list_contract(auth_client):
     assert all(e["is_own"] is False for e in data)  # 내장은 소유 없음
 
 
-def test_create_with_tags_and_machine_contract(auth_client):
+def test_create_with_tags_contract(auth_client):
     machine = auth_client.post(
         "/api/machines", json={"brand": "gym80", "model": "Chest Press", "target": "chest"}
     )
@@ -55,15 +57,14 @@ def test_create_with_tags_and_machine_contract(auth_client):
         "/api/exercises",
         json={
             "name_ko": "클로즈 그립 벤치프레스 2", "base_movement": "벤치프레스",
-            "tags": ["바벨", "클로즈"], "default_target": "triceps", "machine_id": machine.json()["id"],
+            "tags": ["바벨", "클로즈"], "default_target": "triceps",
         },
     )
     assert res.status_code == 201, res.text
     body = res.json()
     _assert_exercise_shape(body, "created")
     assert body["tags"] == ["바벨", "클로즈"]
-    assert body["machine_id"] == machine.json()["id"]
-    assert body["machine_name"] == "gym80 Chest Press"
+    assert (body["last_machine_id"], body["last_machine_name"]) == (None, None), "기록 전에는 머신 없음"
     assert body["default_target_ko"] == "삼두"
 
 
@@ -72,7 +73,7 @@ def test_create_minimal_defaults(auth_client):
     assert res.status_code == 201, res.text
     body = res.json()
     _assert_exercise_shape(body, "created")
-    assert body["tags"] == [] and body["base_movement"] is None and body["machine_id"] is None
+    assert body["tags"] == [] and body["base_movement"] is None and body["last_machine_id"] is None
 
 
 def test_patch_tags_set_and_clear(auth_client):

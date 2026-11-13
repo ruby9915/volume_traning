@@ -132,13 +132,13 @@ const TARGET_BACKFILL_LABELS: Record<TargetBackfillMode, string> = {
   never: "적용 안 함",
 };
 
-// §10.2 소급 적용 확인의 설정화 — 확인 다이얼로그의 "다시 묻지 않기"와 같은 값을 공유
+// §10.2·§15.3 소급 적용 확인의 설정화 — 확인 다이얼로그의 "다시 묻지 않기"와 같은 값을 공유 (타겟·머신 공용)
 function TargetBackfillSection() {
   const mode = useAppStore((s) => s.targetBackfill);
   const setMode = useAppStore((s) => s.setTargetBackfill);
   return (
     <Card>
-      <SectionTitle>타겟 변경 시 기존 세트</SectionTitle>
+      <SectionTitle>타겟·머신 변경 시 기존 세트</SectionTitle>
       <div className="grid grid-cols-3 gap-2">
         {TARGET_BACKFILL_OPTIONS.map((m) => (
           <ChoiceButton key={m} active={mode === m} onClick={() => setMode(m)}>
@@ -147,8 +147,8 @@ function TargetBackfillSection() {
         ))}
       </div>
       <p className="mt-2 text-xs text-muted">
-        기록 화면에서 종목 카드의 타겟 부위를 바꿀 때, 이미 저장된 같은 종목 세트에도 적용할지 처리
-        방식입니다.
+        기록 화면에서 종목 카드의 타겟 부위나 머신을 바꿀 때, 이미 저장된 같은 종목 세트에도 적용할지
+        처리 방식입니다.
       </p>
     </Card>
   );
@@ -181,7 +181,7 @@ function IndirectWeightSection() {
   );
 }
 
-// §10.4 내 머신 — 종목 폼의 머신 칸에 보이는 목록. 아카이브(1,400+대) 검색으로 담고 여기서 뺀다.
+// §10.4·§15.3 내 머신 — 기록 화면의 머신 칩과 "머신으로 찾기"에 보이는 목록. 아카이브 검색으로 담고 여기서 뺀다.
 function MyMachinesSection() {
   const mine = useMyMachines();
   const [open, setOpen] = useState(false);
@@ -194,7 +194,7 @@ function MyMachinesSection() {
         </div>
       ) : mine.machines.length === 0 ? (
         <p className="mb-3 text-sm text-muted">
-          아직 담은 머신이 없습니다. 헬스장에 있는 머신을 검색해 담아 두면 종목 폼에서 바로 고를 수 있습니다.
+          아직 담은 머신이 없습니다. 헬스장에 있는 머신을 검색해 담아 두면 기록할 때 바로 고를 수 있습니다.
         </p>
       ) : (
         <ul className="mb-3 divide-y divide-line border-t border-line">
@@ -222,7 +222,8 @@ function MyMachinesSection() {
         ＋ 아카이브에서 검색해 담기
       </Button>
       <p className="mt-2 text-xs text-muted">
-        종목의 머신 칸에는 이 목록만 보입니다. 아카이브 전체는 검색으로만 엽니다.
+        기록 화면의 머신 칩과 &lsquo;머신으로 찾기&rsquo;에는 이 목록만 보입니다. 기록에 쓴 머신은 자동으로
+        담기고, 여기서 뺀 머신은 다음 기록의 기본 머신으로 선택되지 않습니다(지난 기록은 그대로).
       </p>
       <MachinePicker
         open={open}

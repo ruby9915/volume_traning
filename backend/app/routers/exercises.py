@@ -1,6 +1,6 @@
 import sqlite3
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from ..auth import CurrentUser, require_auth
 from ..db import get_db
@@ -21,11 +21,40 @@ router = APIRouter(prefix="/api", tags=["exercises"])
 _VISIBLE = "(e.user_id IS NULL OR e.user_id = ?)"
 
 _EXERCISE_SQL = """
-SELECT e.*, t.code AS default_target, t.name_ko AS default_target_ko, m.name_ko AS machine_name
+SELECT e.*, t.code AS default_target, t.name_ko AS default_target_ko
 FROM exercise e
 LEFT JOIN muscle_group t ON t.id = e.default_target_id
-LEFT JOIN machine m ON m.id = e.machine_id
 """
+
+# §15.3 종목별 "내가 마지막으로 쓴 머신" — 기록 화면 머신 칩의 기본값.
+# 그 종목의 내 세트를 최근 순으로 보되, 내 머신에서 뺀 머신의 세트는 건너뛴다(헬스장을 옮겨
+# 머신을 빼면 옛 머신이 기본값으로 따라오지 않는다). 가장 최근 세트에 머신이 없으면 결과에 없다.
+_LAST_MACHINE_SQL = """
+SELECT x.exercise_id AS exercise_id, x.machine_id AS machine_id, m.name_ko AS machine_name
+FROM (
+    SELECT ws.exercise_id, ws.machine_id,
+           ROW_NUMBER() OVER (
+               PARTITION BY ws.exercise_id
+               ORDER BY s.date DESC, s.id DESC, ws.set_index DESC
+           ) AS rn
+    FROM workout_set ws
+    JOIN workout_session s ON s.id = ws.session_id
+    WHERE s.user_id = :uid
+      AND (:eid IS NULL OR ws.exercise_id = :eid)
+      AND (ws.machine_id IS NULL
+           OR ws.machine_id IN (SELECT machine_id FROM user_machine WHERE user_id = :uid))
+) x
+JOIN machine m ON m.id = x.machine_id
+WHERE x.rn = 1
+"""
+
+
+def _last_machines(
+    db: sqlite3.Connection, user_id: int, exercise_id: int | None = None
+) -> dict[int, sqlite3.Row]:
+    """종목 id → (machine_id, machine_name). exercise_id를 주면 그 종목만."""
+    rows = db.execute(_LAST_MACHINE_SQL, {"uid": user_id, "eid": exercise_id}).fetchall()
+    return {r["exercise_id"]: r for r in rows}
 
 
 def _split_tags(text: str | None) -> list[str]:
@@ -63,7 +92,12 @@ def _secondary_ids_or_422(
     return ids
 
 
-def _to_out(row: sqlite3.Row, user: CurrentUser, secondaries: list[sqlite3.Row] = ()) -> ExerciseOut:
+def _to_out(
+    row: sqlite3.Row,
+    user: CurrentUser,
+    secondaries: list[sqlite3.Row] = (),
+    last_machine: sqlite3.Row | None = None,
+) -> ExerciseOut:
     if row["default_target"] is None:
         # 마이그레이션이 채우지 못한 행 — 숨기지 말고 드러낸다 (§10.3)
         raise HTTPException(status_code=500, detail=f"종목 '{row['name_ko']}'에 기본 타겟이 없습니다")
@@ -77,8 +111,8 @@ def _to_out(row: sqlite3.Row, user: CurrentUser, secondaries: list[sqlite3.Row] 
         default_target_ko=row["default_target_ko"],
         secondary_targets=[r["code"] for r in secondaries],
         secondary_targets_ko=[r["name_ko"] for r in secondaries],
-        machine_id=row["machine_id"],
-        machine_name=row["machine_name"],
+        last_machine_id=last_machine["machine_id"] if last_machine else None,
+        last_machine_name=last_machine["machine_name"] if last_machine else None,
         bodyweight_factor=row["bodyweight_factor"],
         load_multiplier=row["load_multiplier"],
         is_builtin=bool(row["is_builtin"]),
@@ -107,14 +141,6 @@ def _require_editable(row: sqlite3.Row, user: CurrentUser) -> None:
         raise HTTPException(status_code=404, detail="종목을 찾을 수 없습니다")
 
 
-def _machine_id_or_422(db: sqlite3.Connection, machine_id: int | None) -> int | None:
-    if machine_id is None:
-        return None
-    if db.execute("SELECT 1 FROM machine WHERE id = ?", (machine_id,)).fetchone() is None:
-        raise HTTPException(status_code=422, detail="machine_id에 해당하는 머신이 없습니다")
-    return machine_id
-
-
 @router.get("/exercises", response_model=list[ExerciseOut])
 def list_exercises(
     include_archived: bool = False,
@@ -126,12 +152,20 @@ def list_exercises(
         (user.id, 1 if include_archived else 0),
     ).fetchall()
     secondaries = _secondaries(db, [r["id"] for r in rows])
-    return [_to_out(r, user, secondaries.get(r["id"], [])) for r in rows]
+    last_machines = _last_machines(db, user.id)
+    return [
+        _to_out(r, user, secondaries.get(r["id"], []), last_machines.get(r["id"])) for r in rows
+    ]
 
 
 def _out_one(db: sqlite3.Connection, user: CurrentUser, exercise_id: int) -> ExerciseOut:
     row = _get_visible_row(db, user, exercise_id)
-    return _to_out(row, user, _secondaries(db, [exercise_id]).get(exercise_id, []))
+    return _to_out(
+        row,
+        user,
+        _secondaries(db, [exercise_id]).get(exercise_id, []),
+        _last_machines(db, user.id, exercise_id).get(exercise_id),
+    )
 
 
 @router.post("/exercises", status_code=201)
@@ -159,15 +193,14 @@ def create_exercise(
         raise HTTPException(status_code=409, detail="같은 이름의 종목이 이미 있습니다")
     target_id = target_id_or_422(db, payload.default_target)
     secondary_ids = _secondary_ids_or_422(db, payload.secondary_targets, target_id)
-    machine_id = _machine_id_or_422(db, payload.machine_id)
     cur = db.execute(
         "INSERT INTO exercise (name_ko, name_en, bodyweight_factor, load_multiplier, note,"
-        " base_movement, tags, aliases, default_target_id, machine_id, user_id, is_builtin)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)",
+        " base_movement, tags, aliases, default_target_id, user_id, is_builtin)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)",
         (
             payload.name_ko, payload.name_en, payload.bodyweight_factor,
             payload.load_multiplier, payload.note, payload.base_movement,
-            tags_to_text(payload.tags), payload.aliases, target_id, machine_id, user.id,
+            tags_to_text(payload.tags), payload.aliases, target_id, user.id,
         ),
     )
     replace_secondary_targets(db, cur.lastrowid, secondary_ids)
@@ -211,8 +244,6 @@ def update_exercise(
             "DELETE FROM exercise_secondary_target WHERE exercise_id = ? AND target_id = ?",
             (exercise_id, new_default_id),
         )
-    if "machine_id" in data:
-        data["machine_id"] = _machine_id_or_422(db, data["machine_id"])
     if "is_archived" in data:
         data["is_archived"] = int(data["is_archived"])
     if data:
@@ -260,31 +291,54 @@ def restore_exercise(
 @router.get("/exercises/{exercise_id}/last-record", response_model=LastRecordOut)
 def last_record(
     exercise_id: int,
+    machine: str | None = Query(
+        default=None,
+        pattern=r"^(none|\d+)$",
+        description="§15.3 머신 범위: 생략 = 머신과 무관, 'none' = 머신 없이 한 기록, 숫자 = 그 머신 id",
+    ),
+    exclude_session: int | None = Query(
+        default=None,
+        description="이 세션은 빼고 찾는다 — 지금 기록 중인 세션의 세트가 '지난번'으로 나오지 않게",
+    ),
     user: CurrentUser = Depends(require_auth),
     db: sqlite3.Connection = Depends(get_db),
 ) -> LastRecordOut:
+    """이 종목을 마지막으로 한 세션의 세트. machine을 주면 그 머신으로 한 세트만 본다 (§15.3 —
+    머신이 다르면 걸리는 무게가 달라 지난 기록도 머신별로 따로 보여 준다)."""
     _get_visible_row(db, user, exercise_id)
+    scope_sql, scope_params = "", []
+    if machine == "none":
+        scope_sql = " AND ws.machine_id IS NULL"
+    elif machine is not None:
+        scope_sql, scope_params = " AND ws.machine_id = ?", [int(machine)]
+    if exclude_session is not None:
+        scope_sql += " AND ws.session_id != ?"
+        scope_params = [*scope_params, exclude_session]
     last = db.execute(
-        """
-        SELECT s.id AS session_id, s.date AS date
+        f"""
+        SELECT s.id AS session_id, s.date AS date,
+               ws.machine_id AS machine_id, m.name_ko AS machine_name
         FROM workout_set ws
         JOIN workout_session s ON s.id = ws.session_id
-        WHERE ws.exercise_id = ? AND s.user_id = ?
-        ORDER BY s.date DESC, s.id DESC
+        LEFT JOIN machine m ON m.id = ws.machine_id
+        WHERE ws.exercise_id = ? AND s.user_id = ?{scope_sql}
+        ORDER BY s.date DESC, s.id DESC, ws.set_index DESC
         LIMIT 1
         """,
-        (exercise_id, user.id),
+        (exercise_id, user.id, *scope_params),
     ).fetchone()
     if last is None:
         raise HTTPException(status_code=404, detail="이전 기록이 없습니다")
     sets = db.execute(
-        "SELECT weight_kg, reps, is_warmup FROM workout_set"
-        " WHERE session_id = ? AND exercise_id = ? ORDER BY set_index",
-        (last["session_id"], exercise_id),
+        "SELECT ws.weight_kg, ws.reps, ws.is_warmup FROM workout_set ws"
+        f" WHERE ws.session_id = ? AND ws.exercise_id = ?{scope_sql} ORDER BY ws.set_index",
+        (last["session_id"], exercise_id, *scope_params),
     ).fetchall()
     return LastRecordOut(
         session_id=last["session_id"],
         session_date=last["date"],
+        machine_id=last["machine_id"],
+        machine_name=last["machine_name"],
         sets=[
             {
                 "weight_kg": r["weight_kg"],

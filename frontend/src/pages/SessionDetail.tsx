@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ApiError,
   apiErrorMessage,
@@ -17,7 +17,10 @@ import {
 } from "../api/client";
 import type {
   Exercise,
+  Machine,
+  MachineRef,
   OutboxItem,
+  Region,
   SessionDetail as SessionDetailData,
   SessionExerciseGroup,
   TargetCode,
@@ -30,12 +33,15 @@ import FlushFailuresBanner from "../components/FlushFailuresBanner";
 import Modal from "../components/Modal";
 import Spinner from "../components/Spinner";
 import Stepper from "../components/Stepper";
+import BackfillModal from "../components/backfill/BackfillModal";
+import { useBackfill } from "../components/backfill/useBackfill";
 import ExercisePicker from "../components/exercise-picker/ExercisePicker";
-import TargetBackfillModal from "../components/target/TargetBackfillModal";
+import MachineChipButton from "../components/machine/MachineChipButton";
+import MachineSheet from "../components/machine/MachineSheet";
+import { machineBadgeLabel, machineRefOf, sameMachine } from "../components/machine/machineRef";
 import TargetChipButton from "../components/target/TargetChipButton";
 import TechniqueChip, { TechniqueBadge } from "../components/TechniqueChip";
 import TargetSheet from "../components/target/TargetSheet";
-import { useTargetBackfill } from "../components/target/useTargetBackfill";
 import { useTargets } from "../hooks/useTargets";
 import { useAppStore } from "../store";
 import { formatFullDate, todayStr } from "../utils/date";
@@ -48,6 +54,13 @@ interface SetFormValues {
   is_warmup: boolean;
   target: TargetCode; // §10.2 세트 타겟 (항상 값 있음)
   technique: Technique | null; // §14 운동 방식
+  machine: MachineRef | null; // §15.1 세트를 수행한 머신 (null = 머신 없음)
+}
+
+/** 피커에서 고른 종목 + (머신으로 찾았다면) 그 머신 */
+interface PickedExercise {
+  ex: Exercise;
+  machine: MachineRef | null;
 }
 
 function groupVolume(g: SessionExerciseGroup): number {
@@ -55,29 +68,45 @@ function groupVolume(g: SessionExerciseGroup): number {
 }
 
 // §5.3: 새 종목 첫 세트에 임의 기본 중량을 넣지 않는다
-function emptySet(target: TargetCode): SetFormValues {
-  return { weight_kg: 0, reps: 8, is_warmup: false, target, technique: null };
+function emptySet(target: TargetCode, machine: MachineRef | null): SetFormValues {
+  return { weight_kg: 0, reps: 8, is_warmup: false, target, technique: null, machine };
 }
 
-// cardTarget: 카드 타겟 칩에서 명시 선택된 값(§10.2 sticky). undefined = 칩 미조작 →
-// 마지막 세트의 타겟 상속(없으면 종목 기본)
-function prefillFrom(g: SessionExerciseGroup, cardTarget?: TargetCode): SetFormValues {
+// §15.3 새 종목 카드의 머신: 머신으로 찾아 들어왔으면 그 머신, 아니면 지난번에 쓴 머신
+function pickedOf(ex: Exercise, machine?: Machine): PickedExercise {
+  return {
+    ex,
+    machine: machine
+      ? { id: machine.id, name_ko: machine.name_ko }
+      : machineRefOf(ex.last_machine_id, ex.last_machine_name),
+  };
+}
+
+// 그룹 마지막 세트의 머신 — 카드 칩을 만지지 않았을 때의 기본값 (§15.3)
+function lastSetMachine(g: SessionExerciseGroup): MachineRef | null {
+  const last = g.sets[g.sets.length - 1];
+  return machineRefOf(last?.machine_id, last?.machine_name);
+}
+
+// cardTarget·cardMachine: 카드 칩에서 명시 선택된 값(§10.2·§15.3 sticky). undefined = 칩 미조작 →
+// 마지막 세트의 값 상속(타겟은 없으면 종목 기본)
+function prefillFrom(
+  g: SessionExerciseGroup,
+  cardTarget: TargetCode | undefined,
+  cardMachine: MachineRef | null | undefined,
+): SetFormValues {
   const last = g.sets[g.sets.length - 1];
   const target = cardTarget ?? last?.target ?? g.default_target;
+  const machine = cardMachine !== undefined ? cardMachine : lastSetMachine(g);
   return last
-    ? { weight_kg: last.weight_kg, reps: last.reps, is_warmup: false, target, technique: last.technique ?? null }
-    : emptySet(target);
-}
-
-// §10.2 소급 적용 대상 — 세션 상세의 세트는 전부 저장된 세트라 id만 있다
-interface TargetBackfillTarget {
-  code: TargetCode;
-  ids: number[];
+    ? { weight_kg: last.weight_kg, reps: last.reps, is_warmup: false, target, technique: last.technique ?? null, machine }
+    : emptySet(target, machine);
 }
 
 function SetEditor({
   initial,
   defaultTarget,
+  region,
   saveLabel,
   busy,
   onSave,
@@ -86,6 +115,8 @@ function SetEditor({
 }: {
   initial: SetFormValues;
   defaultTarget: TargetCode;
+  /** 종목의 부위 — 머신 시트에서 같은 부위 머신을 앞에 둔다 */
+  region: Region | null;
   saveLabel: string;
   busy: boolean;
   onSave: (v: SetFormValues) => void;
@@ -95,6 +126,7 @@ function SetEditor({
   const weightStep = useAppStore((s) => s.weightStep);
   const [values, setValues] = useState(initial);
   const [sheetOpen, setSheetOpen] = useState(false);
+  const [machineOpen, setMachineOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const submit = () => {
@@ -128,7 +160,7 @@ function SetEditor({
           onChange={(r) => setValues((v) => ({ ...v, reps: r }))}
         />
       </div>
-      <div className="mt-3 flex items-center justify-between gap-3">
+      <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2">
         <label className="flex items-center gap-2 text-sm text-muted">
           <input
             type="checkbox"
@@ -140,6 +172,8 @@ function SetEditor({
         </label>
         <TechniqueChip value={values.technique} onChange={(t) => setValues((v) => ({ ...v, technique: t }))} />
         <TargetChipButton value={values.target} defaultCode={defaultTarget} onClick={() => setSheetOpen(true)} />
+        {/* §15.1 이 세트의 머신 */}
+        <MachineChipButton value={values.machine} onClick={() => setMachineOpen(true)} />
       </div>
       {error && <p className="mt-2 text-center text-sm text-danger">{error}</p>}
       <div className="mt-3 flex gap-2">
@@ -163,6 +197,17 @@ function SetEditor({
         onSelect={(code) => {
           setValues((v) => ({ ...v, target: code }));
           setSheetOpen(false);
+        }}
+      />
+      <MachineSheet
+        open={machineOpen}
+        value={values.machine}
+        region={region}
+        description="이 세트 하나의 머신만 정합니다."
+        onClose={() => setMachineOpen(false)}
+        onSelect={(m) => {
+          setValues((v) => ({ ...v, machine: m }));
+          setMachineOpen(false);
         }}
       />
     </div>
@@ -272,12 +317,13 @@ function NewSessionEditor() {
   const [searchParams] = useSearchParams();
   const rawDate = searchParams.get("date") ?? "";
   const date = /^\d{4}-\d{2}-\d{2}$/.test(rawDate) ? rawDate : todayStr();
+  const { regionOf } = useTargets();
 
   const exercisesQuery = useQuery({ queryKey: ["exercises"], queryFn: () => fetchExercises() });
   const exercises = exercisesQuery.data ?? [];
 
   const [pickerOpen, setPickerOpen] = useState(false);
-  const [picked, setPicked] = useState<Exercise | null>(null);
+  const [picked, setPicked] = useState<PickedExercise | null>(null);
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [queuedItems, setQueuedItems] = useState<OutboxItem[]>([]);
@@ -315,12 +361,13 @@ function NewSessionEditor() {
     try {
       const saved = await saveSet({
         date,
-        exercise_id: picked.id,
+        exercise_id: picked.ex.id,
         weight_kg: v.weight_kg,
         reps: v.reps,
         is_warmup: v.is_warmup,
         target: v.target,
         technique: v.technique,
+        machine: v.machine,
         // 첫 세트만 새 세션 생성 — 큐 대기 중 추가 세트는 같은 날짜 lazy 귀속 (flush 순서 보존)
         new_session: sessionRequestedRef.current ? undefined : true,
       });
@@ -394,10 +441,11 @@ function NewSessionEditor() {
 
       {picked ? (
         <Card variant="sunken" className="mb-3">
-          <h2 className="font-bold">{picked.name_ko}</h2>
+          <h2 className="font-bold">{picked.ex.name_ko}</h2>
           <SetEditor
-            initial={emptySet(picked.default_target)}
-            defaultTarget={picked.default_target}
+            initial={emptySet(picked.ex.default_target, picked.machine)}
+            defaultTarget={picked.ex.default_target}
+            region={regionOf(picked.ex.default_target)}
             saveLabel="세트 저장"
             busy={busy}
             onSave={(v) => void handleSave(v)}
@@ -412,9 +460,9 @@ function NewSessionEditor() {
         open={pickerOpen}
         onClose={() => setPickerOpen(false)}
         exercises={exercises}
-        onSelect={(ex) => {
+        onSelect={(ex, machine) => {
           setPickerOpen(false);
-          setPicked(ex);
+          setPicked(pickedOf(ex, machine));
           setActionError(null);
         }}
       />
@@ -425,14 +473,15 @@ function NewSessionEditor() {
 function ExistingSessionDetail({ sessionIdParam }: { sessionIdParam: string }) {
   const id = Number(sessionIdParam);
   const navigate = useNavigate();
-  const { nameOf } = useTargets();
+  const queryClient = useQueryClient();
+  const { nameOf, regionOf } = useTargets();
 
   const [data, setData] = useState<SessionDetailData | null>(null);
   const [notFound, setNotFound] = useState(!Number.isFinite(id));
   const [loadError, setLoadError] = useState(false);
   const [editingSetId, setEditingSetId] = useState<number | null>(null);
   const [addingExerciseId, setAddingExerciseId] = useState<number | null>(null);
-  const [newExercise, setNewExercise] = useState<Exercise | null>(null);
+  const [newExercise, setNewExercise] = useState<PickedExercise | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [editSessionOpen, setEditSessionOpen] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -444,6 +493,9 @@ function ExistingSessionDetail({ sessionIdParam }: { sessionIdParam: string }) {
   // 값 존재 = 칩에서 명시 선택, 부재 = 미조작(마지막 세트 타겟 상속)
   const [cardTargets, setCardTargets] = useState<Partial<Record<number, TargetCode>>>({});
   const [targetSheetFor, setTargetSheetFor] = useState<number | null>(null);
+  // §15.3 카드 단위 머신 — 같은 규칙. 키 없음 = 미조작(마지막 세트의 머신), null = "머신 없음"을 고름
+  const [cardMachines, setCardMachines] = useState<Partial<Record<number, MachineRef | null>>>({});
+  const [machineSheetFor, setMachineSheetFor] = useState<number | null>(null);
 
   // §3.7B 종목 추가용 — Log와 React Query 캐시 공유
   const exercisesQuery = useQuery({ queryKey: ["exercises"], queryFn: () => fetchExercises() });
@@ -476,6 +528,9 @@ function ExistingSessionDetail({ sessionIdParam }: { sessionIdParam: string }) {
     });
   }, [reload]);
 
+  // 세트의 머신이 바뀌면 종목 목록의 "지난번 머신"(선택 시트 칩·다음 기본값)도 새로 받는다
+  const refreshExercises = () => void queryClient.invalidateQueries({ queryKey: ["exercises"] });
+
   const handleUpdate = async (setId: number, v: SetFormValues) => {
     setBusy(true);
     setActionError(null);
@@ -486,9 +541,11 @@ function ExistingSessionDetail({ sessionIdParam }: { sessionIdParam: string }) {
         is_warmup: v.is_warmup,
         target: v.target,
         technique: v.technique,
+        machine_id: v.machine?.id ?? null,
       });
       setEditingSetId(null);
       await reload();
+      refreshExercises();
     } catch (e) {
       setActionError(apiErrorMessage(e, "세트 수정에 실패했습니다."));
     } finally {
@@ -524,12 +581,16 @@ function ExistingSessionDetail({ sessionIdParam }: { sessionIdParam: string }) {
         is_warmup: v.is_warmup,
         target: v.target,
         technique: v.technique,
+        machine: v.machine,
         session_id: data!.id,
       });
       setAddingExerciseId(null);
       setNewExercise(null);
       if (saved === null) setQueuedNotice(true);
-      else await reload();
+      else {
+        await reload();
+        refreshExercises();
+      }
     } catch (e) {
       setActionError(apiErrorMessage(e, "세트 추가에 실패했습니다."));
     } finally {
@@ -540,18 +601,29 @@ function ExistingSessionDetail({ sessionIdParam }: { sessionIdParam: string }) {
   // 카드 칩 표시값 = 다음 "세트 추가"에 적용될 타겟 (명시 선택 우선, 없으면 마지막 세트 상속, 없으면 기본)
   const effectiveTarget = (g: SessionExerciseGroup): TargetCode =>
     cardTargets[g.exercise_id] ?? g.sets[g.sets.length - 1]?.target ?? g.default_target;
+  // 같은 규칙의 머신 (§15.3) — 명시 선택은 null(머신 없음)도 유효
+  const effectiveMachine = (g: SessionExerciseGroup): MachineRef | null => {
+    const chosen = cardMachines[g.exercise_id];
+    return chosen !== undefined ? chosen : lastSetMachine(g);
+  };
 
-  // §10.2 소급 적용 실행 — 설정 분기·확인 다이얼로그는 useTargetBackfill이 담당 (Log와 공용)
-  const backfill = useTargetBackfill(async ({ code, ids }: TargetBackfillTarget) => {
+  // 소급 적용 실행 (§10.2 타겟 · §15.3 머신) — 설정 분기·확인 다이얼로그는 useBackfill이 담당 (Log와 공용)
+  const backfill = useBackfill(async (t) => {
     setBusy(true);
     setActionError(null);
     try {
-      for (const setId of ids) {
-        await updateSet(setId, { target: code });
+      for (const setId of t.ids) {
+        await updateSet(
+          setId,
+          t.kind === "target" ? { target: t.code } : { machine_id: t.machine?.id ?? null },
+        );
       }
       await reload();
+      if (t.kind === "machine") refreshExercises();
     } catch (e) {
-      setActionError(apiErrorMessage(e, "타겟 적용에 실패했습니다."));
+      setActionError(
+        apiErrorMessage(e, t.kind === "target" ? "타겟 적용에 실패했습니다." : "머신 적용에 실패했습니다."),
+      );
     } finally {
       setBusy(false);
     }
@@ -563,8 +635,16 @@ function ExistingSessionDetail({ sessionIdParam }: { sessionIdParam: string }) {
     setTargetSheetFor(null);
     setCardTargets((m) => ({ ...m, [g.exercise_id]: code }));
     const ids = g.sets.filter((s) => s.target !== code).map((s) => s.id);
-    if (ids.length === 0) return;
-    await backfill.request({ code, ids });
+    await backfill.request({ kind: "target", code, ids, clientIds: [] });
+  };
+
+  // §15.3 머신 선택 (카드 단위) — 타겟과 같은 흐름
+  const applyCardMachine = async (g: SessionExerciseGroup, machine: MachineRef | null) => {
+    setMachineSheetFor(null);
+    if (sameMachine(machine, effectiveMachine(g))) return;
+    setCardMachines((m) => ({ ...m, [g.exercise_id]: machine }));
+    const ids = g.sets.filter((s) => s.machine_id !== (machine?.id ?? null)).map((s) => s.id);
+    await backfill.request({ kind: "machine", machine, ids, clientIds: [] });
   };
 
   const handleDeleteSession = async () => {
@@ -579,17 +659,20 @@ function ExistingSessionDetail({ sessionIdParam }: { sessionIdParam: string }) {
     }
   };
 
-  // 피커에서 종목 선택 — 이미 세션에 있으면 그 카드의 세트 추가 열기, 없으면 새 종목 카드
-  const handlePickExercise = (ex: Exercise) => {
+  // 피커에서 종목 선택 — 이미 세션에 있으면 그 카드의 세트 추가 열기, 없으면 새 종목 카드.
+  // 머신으로 찾아 들어왔으면(§15.4) 그 머신을 카드에 건다.
+  const handlePickExercise = (ex: Exercise, machine?: Machine) => {
     setPickerOpen(false);
     setEditingSetId(null);
     setActionError(null);
-    if (data?.exercises.some((g) => g.exercise_id === ex.id)) {
+    const existing = data?.exercises.find((g) => g.exercise_id === ex.id);
+    if (existing) {
       setNewExercise(null);
       setAddingExerciseId(ex.id);
+      if (machine) void applyCardMachine(existing, { id: machine.id, name_ko: machine.name_ko });
     } else {
       setAddingExerciseId(null);
-      setNewExercise(ex);
+      setNewExercise(pickedOf(ex, machine));
     }
   };
 
@@ -629,6 +712,7 @@ function ExistingSessionDetail({ sessionIdParam }: { sessionIdParam: string }) {
 
   const totalSets = data.exercises.reduce((n, g) => n + g.sets.length, 0);
   const sheetGroup = data.exercises.find((x) => x.exercise_id === targetSheetFor) ?? null;
+  const machineSheetGroup = data.exercises.find((x) => x.exercise_id === machineSheetFor) ?? null;
 
   return (
     <main className="mx-auto max-w-[720px] p-4">
@@ -694,112 +778,136 @@ function ExistingSessionDetail({ sessionIdParam }: { sessionIdParam: string }) {
         <p className="py-8 text-center text-sm text-muted">기록된 세트가 없습니다.</p>
       )}
 
-      {data.exercises.map((g) => (
-        <Card key={g.exercise_id} variant="sunken" className="mb-3">
-          {/* 기록 화면 완료 카드 패턴: 종목명 + 우측 세트수 뱃지(라이트 ✓ N accent / 다크 N SETS) */}
-          <div className="flex items-center justify-between gap-2">
-            <h2 className="min-w-0 truncate font-bold">{g.name_ko}</h2>
-            {/* §10.2 타겟 칩 (기록·세션상세 공통) — 탭 → 3단계 시트, 이후 추가 세트에 sticky */}
-            <TargetChipButton
-              value={effectiveTarget(g)}
-              defaultCode={g.default_target}
-              onClick={() => setTargetSheetFor(g.exercise_id)}
-            />
-            <span className="flex shrink-0 items-baseline gap-2 font-numeric text-sm text-muted">
-              {fmtInt(groupVolume(g))} kg
-              <span className="text-xs font-bold text-accent dark:hidden">✓ {g.sets.length}</span>
-              <span className="hidden text-xs tracking-wider uppercase dark:inline">
-                {g.sets.length} SETS
+      {data.exercises.map((g) => {
+        const machine = effectiveMachine(g);
+        const region = regionOf(g.default_target);
+        return (
+          <Card key={g.exercise_id} variant="sunken" className="mb-3">
+            {/* 기록 화면 완료 카드 패턴: 종목명 + 우측 세트수 뱃지(라이트 ✓ N accent / 다크 N SETS) */}
+            <div className="flex items-center justify-between gap-2">
+              <h2 className="min-w-0 truncate font-bold">{g.name_ko}</h2>
+              {/* §10.2 타겟 칩 (기록·세션상세 공통) — 탭 → 3단계 시트, 이후 추가 세트에 sticky */}
+              <TargetChipButton
+                value={effectiveTarget(g)}
+                defaultCode={g.default_target}
+                onClick={() => setTargetSheetFor(g.exercise_id)}
+              />
+              <span className="flex shrink-0 items-baseline gap-2 font-numeric text-sm text-muted">
+                {fmtInt(groupVolume(g))} kg
+                <span className="text-xs font-bold text-accent dark:hidden">✓ {g.sets.length}</span>
+                <span className="hidden text-xs tracking-wider uppercase dark:inline">
+                  {g.sets.length} SETS
+                </span>
               </span>
-            </span>
-          </div>
-          <ul className="mt-2.5 flex flex-col gap-1.5">
-            {g.sets.map((s, i) =>
-              editingSetId === s.id ? (
-                <li key={s.id}>
-                  <SetEditor
-                    initial={{ weight_kg: s.weight_kg, reps: s.reps, is_warmup: s.is_warmup, target: s.target, technique: s.technique }}
-                    defaultTarget={g.default_target}
-                    saveLabel="저장"
-                    busy={busy}
-                    onSave={(v) => void handleUpdate(s.id, v)}
-                    onCancel={() => setEditingSetId(null)}
-                    onDelete={() => void handleDeleteSet(s.id)}
-                  />
-                </li>
-              ) : (
-                <li key={s.id}>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setEditingSetId(s.id);
-                      setAddingExerciseId(null);
-                      setNewExercise(null);
-                      setActionError(null);
-                    }}
-                    className="flex min-h-11 w-full items-center gap-2.5 rounded-row bg-well px-3 py-2 text-left active:brightness-[0.97] dark:active:brightness-125"
-                  >
-                    <span className="grid h-[18px] w-[18px] shrink-0 place-items-center rounded-full bg-accent font-numeric text-[10px] font-bold text-on-accent dark:h-auto dark:w-4 dark:bg-transparent dark:text-xs dark:font-medium dark:text-muted">
-                      {i + 1}
-                    </span>
-                    <span className="flex-1 font-numeric font-semibold">
-                      {s.weight_kg} × {s.reps}
-                    </span>
-                    {s.is_warmup && (
-                      <span className="rounded-tag bg-line px-1.5 py-0.5 text-[10px] font-semibold text-secondary">
-                        웜업
+            </div>
+            {/* §15.3 머신 칩 (기록·세션상세 공통) — 탭 → 내 머신 시트, 이후 추가 세트에 적용 */}
+            <div className="mt-2 flex min-w-0">
+              <MachineChipButton value={machine} onClick={() => setMachineSheetFor(g.exercise_id)} />
+            </div>
+            <ul className="mt-2.5 flex flex-col gap-1.5">
+              {g.sets.map((s, i) =>
+                editingSetId === s.id ? (
+                  <li key={s.id}>
+                    <SetEditor
+                      initial={{
+                        weight_kg: s.weight_kg,
+                        reps: s.reps,
+                        is_warmup: s.is_warmup,
+                        target: s.target,
+                        technique: s.technique,
+                        machine: machineRefOf(s.machine_id, s.machine_name),
+                      }}
+                      defaultTarget={g.default_target}
+                      region={region}
+                      saveLabel="저장"
+                      busy={busy}
+                      onSave={(v) => void handleUpdate(s.id, v)}
+                      onCancel={() => setEditingSetId(null)}
+                      onDelete={() => void handleDeleteSet(s.id)}
+                    />
+                  </li>
+                ) : (
+                  <li key={s.id}>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditingSetId(s.id);
+                        setAddingExerciseId(null);
+                        setNewExercise(null);
+                        setActionError(null);
+                      }}
+                      className="flex min-h-11 w-full items-center gap-2.5 rounded-row bg-well px-3 py-2 text-left active:brightness-[0.97] dark:active:brightness-125"
+                    >
+                      <span className="grid h-[18px] w-[18px] shrink-0 place-items-center rounded-full bg-accent font-numeric text-[10px] font-bold text-on-accent dark:h-auto dark:w-4 dark:bg-transparent dark:text-xs dark:font-medium dark:text-muted">
+                        {i + 1}
                       </span>
-                    )}
-                    <TechniqueBadge technique={s.technique} />
-                    {/* §10.2 종목 기본과 다른 타겟만 뱃지 */}
-                    {s.target !== g.default_target && (
-                      <span className="rounded-tag bg-accent-glow px-1.5 py-0.5 text-[10px] font-semibold text-accent">
-                        {nameOf(s.target)}
+                      <span className="shrink-0 font-numeric font-semibold">
+                        {s.weight_kg} × {s.reps}
                       </span>
-                    )}
-                    <span className="shrink-0 font-numeric text-sm text-muted">
-                      {fmtInt(s.volume_kg)} kg
-                    </span>
-                  </button>
-                </li>
-              ),
+                      {s.is_warmup && (
+                        <span className="shrink-0 rounded-tag bg-line px-1.5 py-0.5 text-[10px] font-semibold text-secondary">
+                          웜업
+                        </span>
+                      )}
+                      <TechniqueBadge technique={s.technique} />
+                      {/* §10.2 종목 기본과 다른 타겟만 뱃지 */}
+                      {s.target !== g.default_target && (
+                        <span className="shrink-0 rounded-tag bg-accent-glow px-1.5 py-0.5 text-[10px] font-semibold text-accent">
+                          {nameOf(s.target)}
+                        </span>
+                      )}
+                      {/* §15.1 카드의 머신과 다른 세트만 뱃지 */}
+                      {s.machine_id !== (machine?.id ?? null) && (
+                        <span className="min-w-0 truncate rounded-tag bg-surface-2 px-1.5 py-0.5 text-[10px] font-semibold text-muted">
+                          {machineBadgeLabel(s.machine_name)}
+                        </span>
+                      )}
+                      <span className="ml-auto shrink-0 font-numeric text-sm text-muted">
+                        {fmtInt(s.volume_kg)} kg
+                      </span>
+                    </button>
+                  </li>
+                ),
+              )}
+            </ul>
+            {addingExerciseId === g.exercise_id ? (
+              <SetEditor
+                initial={prefillFrom(g, cardTargets[g.exercise_id], cardMachines[g.exercise_id])}
+                defaultTarget={g.default_target}
+                region={region}
+                saveLabel="세트 추가"
+                busy={busy}
+                onSave={(v) => void handleAdd(g.exercise_id, v)}
+                onCancel={() => setAddingExerciseId(null)}
+              />
+            ) : (
+              <DashedAddButton
+                className="mt-2"
+                onClick={() => {
+                  setAddingExerciseId(g.exercise_id);
+                  setEditingSetId(null);
+                  setNewExercise(null);
+                  setActionError(null);
+                }}
+              >
+                ＋ 세트 추가
+              </DashedAddButton>
             )}
-          </ul>
-          {addingExerciseId === g.exercise_id ? (
-            <SetEditor
-              initial={prefillFrom(g, cardTargets[g.exercise_id])}
-              defaultTarget={g.default_target}
-              saveLabel="세트 추가"
-              busy={busy}
-              onSave={(v) => void handleAdd(g.exercise_id, v)}
-              onCancel={() => setAddingExerciseId(null)}
-            />
-          ) : (
-            <DashedAddButton
-              className="mt-2"
-              onClick={() => {
-                setAddingExerciseId(g.exercise_id);
-                setEditingSetId(null);
-                setNewExercise(null);
-                setActionError(null);
-              }}
-            >
-              ＋ 세트 추가
-            </DashedAddButton>
-          )}
-        </Card>
-      ))}
+          </Card>
+        );
+      })}
 
       {/* §3.7B 피커에서 고른 새 종목 — 첫 세트 저장 시 session_id 직접 귀속으로 세션에 추가 */}
       {newExercise && (
         <Card variant="sunken" className="mb-3">
-          <h2 className="font-bold">{newExercise.name_ko}</h2>
+          <h2 className="font-bold">{newExercise.ex.name_ko}</h2>
           <SetEditor
-            initial={emptySet(newExercise.default_target)}
-            defaultTarget={newExercise.default_target}
+            initial={emptySet(newExercise.ex.default_target, newExercise.machine)}
+            defaultTarget={newExercise.ex.default_target}
+            region={regionOf(newExercise.ex.default_target)}
             saveLabel="세트 추가"
             busy={busy}
-            onSave={(v) => void handleAdd(newExercise.id, v)}
+            onSave={(v) => void handleAdd(newExercise.ex.id, v)}
             onCancel={() => setNewExercise(null)}
           />
         </Card>
@@ -826,11 +934,21 @@ function ExistingSessionDetail({ sessionIdParam }: { sessionIdParam: string }) {
         }}
       />
 
-      {/* §10.2 소급 적용 확인 — 설정 "물어보기"일 때만 열린다 */}
-      <TargetBackfillModal
-        open={backfill.prompt != null}
-        count={backfill.prompt?.ids.length ?? 0}
-        code={backfill.prompt?.code ?? null}
+      {/* §15.3 머신 선택 시트 — Log와 동일, 카드 단위 */}
+      <MachineSheet
+        open={machineSheetFor != null}
+        value={machineSheetGroup ? effectiveMachine(machineSheetGroup) : null}
+        region={machineSheetGroup ? regionOf(machineSheetGroup.default_target) : null}
+        description="선택하면 이 종목의 이후 추가 세트에 적용됩니다. PR과 지난 기록은 머신별로 따로 봅니다."
+        onClose={() => setMachineSheetFor(null)}
+        onSelect={(m) => {
+          if (machineSheetGroup) void applyCardMachine(machineSheetGroup, m);
+        }}
+      />
+
+      {/* 소급 적용 확인 (타겟·머신) — 설정 "물어보기"일 때만 열린다 */}
+      <BackfillModal
+        prompt={backfill.prompt}
         busy={busy}
         onResolve={(apply, remember) => void backfill.resolve(apply, remember)}
         onClose={backfill.dismiss}

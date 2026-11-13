@@ -136,6 +136,25 @@ export interface BrandCount {
   count: number;
 }
 
+/** 세트·종목 카드에 붙는 머신의 최소 표현 (§15) — id + 표시 이름 */
+export interface MachineRef {
+  id: number;
+  name_ko: string;
+}
+
+export interface MachineExerciseUse {
+  exercise_id: number;
+  set_count: number;
+  last_date: string;
+}
+
+// GET /api/machines/{id}/exercises — 머신을 먼저 골랐을 때의 종목 후보 (§15.4)
+export interface MachineExercises {
+  machine: Machine;
+  used: MachineExerciseUse[]; // 내가 이 머신으로 기록한 종목, 최근 순
+  suggested: number[]; // 추천 종목 id, 점수 순 (used의 종목은 빠진다)
+}
+
 // ---------- Exercises (§10.3) ----------
 
 export interface Exercise {
@@ -149,8 +168,10 @@ export interface Exercise {
   // §11.2 보조(협응) 근육 — 간접 볼륨 후보. 기본 타겟과 같은 근육은 없다
   secondary_targets: TargetCode[];
   secondary_targets_ko: string[];
-  machine_id: number | null;
-  machine_name: string | null;
+  // §15.3 내가 이 종목에서 마지막으로 쓴 머신 — 기록 화면 머신 칩의 기본값.
+  // 종목의 속성이 아니라 내 세트에서 나온다 (내 머신에서 뺀 머신은 건너뛴다)
+  last_machine_id: number | null;
+  last_machine_name: string | null;
   bodyweight_factor: number;
   load_multiplier: number;
   is_builtin: boolean;
@@ -167,7 +188,6 @@ export interface ExerciseCreateRequest {
   tags?: string[];
   default_target: TargetCode;
   secondary_targets?: TargetCode[]; // ≤5, 기본 타겟과 같으면 422
-  machine_id?: number | null;
   bodyweight_factor?: number;
   load_multiplier?: number;
   note?: string | null;
@@ -195,10 +215,13 @@ export interface LastRecordSet {
   is_warmup: boolean;
 }
 
-// GET /api/exercises/{id}/last-record — 기록 없으면 null
+// GET /api/exercises/{id}/last-record?machine= — 기록 없으면 null.
+// machine 생략 = 머신과 무관, "none" = 머신 없이 한 기록, 숫자 = 그 머신으로 한 기록 (§15.3)
 export interface LastRecord {
   session_id: number;
   session_date: string;
+  machine_id: number | null; // 이 기록의 머신
+  machine_name: string | null;
   sets: LastRecordSet[];
 }
 
@@ -220,12 +243,15 @@ export interface SaveSetInput {
   // §10.2 세트 타겟 — 미지정/null = 종목 기본 타겟
   target?: TargetCode | null;
   technique?: Technique | null; // §14 운동 방식 — 미지정/null = 일반 세트
+  machine?: MachineRef | null; // §15.1 세트를 수행한 머신 — 미지정/null = 머신 없음
   // §3.7B 세션 직접 귀속 — 지정 시 lazy 생성 생략, 그 세션에 직접 추가 (date 불일치 시 422)
   session_id?: number;
 }
 
-export interface SetCreateRequest extends SaveSetInput {
+// POST /api/sets 본문 — 머신은 id만 보낸다
+export interface SetCreateRequest extends Omit<SaveSetInput, "machine"> {
   client_id: string; // UUID — 멱등 키 (§5.4)
+  machine_id?: number | null;
 }
 
 // §14 운동 방식 — 세트 태그. 볼륨·PR 무관. null = 일반 세트
@@ -258,6 +284,9 @@ export interface OutboxItem {
   note?: string;
   // v1 큐 항목(intent_muscle)은 무시된다 — 서버가 종목 기본 타겟을 채운다
   target?: TargetCode | null;
+  // §15.1 — 옛 큐 항목에는 없다(= 머신 없음). 이름은 대기 세트 표시용이고 전송하지 않는다
+  machine_id?: number | null;
+  machine_name?: string | null;
   session_id?: number;
   queued_at: string; // ISO datetime
 }
@@ -279,6 +308,8 @@ export interface WorkoutSet {
   target: TargetCode; // 항상 존재
   target_ko: string;
   technique: Technique | null; // §14
+  machine_id: number | null; // §15.1 (null = 머신 없음)
+  machine_name: string | null;
 }
 
 export interface SetUpdateRequest {
@@ -287,6 +318,7 @@ export interface SetUpdateRequest {
   is_warmup?: boolean;
   target?: TargetCode | null; // null 전송 = 종목 기본 타겟으로 되돌리기
   technique?: Technique | null; // §14 null 전송 = 일반 세트
+  machine_id?: number | null; // §15.1 null 전송 = 머신 없음
 }
 
 // ---------- Sessions ----------
@@ -326,6 +358,8 @@ export interface SessionSetRecord {
   target: TargetCode;
   target_ko: string;
   technique: Technique | null; // §14
+  machine_id: number | null; // §15.1
+  machine_name: string | null;
 }
 
 export interface SessionExerciseGroup {
@@ -381,6 +415,9 @@ export interface PrEvent {
   value: number;
   weight_kg: number;
   reps: number;
+  // §15.2 PR은 (종목, 머신) 범위 — 이 갱신이 일어난 머신 (null = 머신 없이 한 기록끼리)
+  machine_id: number | null;
+  machine_name: string | null;
 }
 
 export interface StatsSummary {

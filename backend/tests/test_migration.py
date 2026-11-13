@@ -1,7 +1,8 @@
-"""user_version 기반 마이그레이션(v1→v2→v3→v4) 테스트.
+"""user_version 기반 마이그레이션(v1 → … → v9) 테스트.
 
 구버전 스키마 DB를 코드로 만들어 init_db로 마이그레이션한 뒤 컬럼·데이터 무손상·멱등성·
-v4 데이터 단계(관리자 생성, 소유자 귀속, 기본 타겟, 세트 타겟, 커스텀 병합/승격, 즐겨찾기)를 단언한다.
+v4 데이터 단계(관리자 생성, 소유자 귀속, 기본 타겟, 세트 타겟, 커스텀 병합/승격, 즐겨찾기)와
+이후 버전의 구조·데이터 단계(v5 보조 근육, v6 내 머신, v7 프로필, v8 운동 방식, v9 세트의 머신)를 단언한다.
 """
 
 import sqlite3
@@ -520,5 +521,190 @@ def test_fresh_db_created_at_current_version(tmp_path, env):
         assert log == ["admin user created: owner"]
         conn.execute("SELECT target_id, user_id FROM set_volume LIMIT 1")
         conn.execute("SELECT muscle_code FROM target_path LIMIT 1")
+    finally:
+        conn.close()
+
+
+# ---- v8 → v9 (§15 세트의 머신) ---------------------------------------------
+
+
+def _make_v8_db(path) -> None:
+    """v8 모양 재현: 최신 스키마에서 workout_set.machine_id(와 그것을 참조하는 VIEW·인덱스)를 걷어 낸다."""
+    init_db(path)
+    conn = _connect(path)
+    try:
+        conn.execute("DROP VIEW set_indirect")
+        conn.execute("DROP VIEW set_volume")
+        conn.execute("DROP INDEX idx_set_machine")
+        conn.execute("ALTER TABLE workout_set DROP COLUMN machine_id")
+        conn.execute("PRAGMA user_version = 8")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _add_v8_machine_exercise(conn, name_ko: str, machine_model: str, **factors) -> tuple[int, int]:
+    """v8 방식: 머신을 종목에 붙인 커스텀 종목 + 세트 3개(타겟 lats) + 즐겨찾기. 반환 (종목 id, 머신 id)."""
+    admin = conn.execute("SELECT id FROM user ORDER BY id LIMIT 1").fetchone()[0]
+    machine = conn.execute("SELECT id FROM machine WHERE model = ?", (machine_model,)).fetchone()[0]
+    ex = conn.execute(
+        "INSERT INTO exercise (name_ko, default_target_id, machine_id, user_id, is_builtin,"
+        " bodyweight_factor, load_multiplier) VALUES (?, ?, ?, ?, 0, ?, ?)",
+        (name_ko, _mg(conn, "lats"), machine, admin,
+         factors.get("bodyweight_factor", 0), factors.get("load_multiplier", 1)),
+    ).lastrowid
+    session = conn.execute(
+        "INSERT INTO workout_session (date, user_id) VALUES (?, ?)", ("2026-11-11", admin)
+    ).lastrowid
+    for i, (weight, reps) in enumerate([(60, 12), (70, 10), (70, 9)], start=1):
+        conn.execute(
+            "INSERT INTO workout_set (session_id, exercise_id, set_index, weight_kg, reps, target_id)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (session, ex, i, weight, reps, _mg(conn, "lats")),
+        )
+    bench = conn.execute(
+        "SELECT id, default_target_id FROM exercise WHERE name_ko = ?", ("벤치프레스",)
+    ).fetchone()
+    conn.execute(
+        "INSERT INTO workout_set (session_id, exercise_id, set_index, weight_kg, reps, target_id)"
+        " VALUES (?, ?, 4, 100, 5, ?)",
+        (session, bench["id"], bench["default_target_id"]),
+    )
+    conn.execute("INSERT INTO favorite (user_id, exercise_id, sort_order) VALUES (?, ?, 0)", (admin, ex))
+    conn.commit()
+    return ex, machine
+
+
+_V8_FIXTURE_VOLUME = 60 * 12 + 70 * 10 + 70 * 9 + 100 * 5
+
+
+def _total_volume(conn) -> float:
+    return conn.execute("SELECT SUM(volume_kg) FROM set_volume").fetchone()[0]
+
+
+def test_migrate_v8_to_v9_moves_exercise_machine_to_sets(tmp_path, env):
+    """v8 DB(머신이 종목에 붙음): 세트에 machine_id가 생기고, 종목의 머신이 그 종목의 세트로 옮겨진다."""
+    path = str(tmp_path / "v8.db")
+    _make_v8_db(path)
+    conn = _connect(path)
+    try:
+        assert "machine_id" not in _columns(conn, "workout_set")
+        ex, machine = _add_v8_machine_exercise(conn, "커스텀 머신 로우", "MTS Iso-Lateral Row")
+    finally:
+        conn.close()
+
+    log = init_db(path)
+    assert log == ["set machines backfilled: 3"], log
+    conn = _connect(path)
+    try:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+        assert "machine_id" in _columns(conn, "workout_set")
+        by_exercise: dict[int, set] = {}
+        for r in conn.execute("SELECT exercise_id, machine_id FROM workout_set").fetchall():
+            by_exercise.setdefault(r["exercise_id"], set()).add(r["machine_id"])
+        bench = conn.execute("SELECT id FROM exercise WHERE name_ko = ?", ("벤치프레스",)).fetchone()[0]
+        assert by_exercise == {ex: {machine}, bench: {None}}
+        # 종목의 머신 컬럼은 지우지 않는다 (v8 코드로 되돌려도 같은 DB가 열린다)
+        assert conn.execute("SELECT machine_id FROM exercise WHERE id = ?", (ex,)).fetchone()[0] == machine
+        # VIEW가 machine_id를 싣고, 볼륨은 그대로 (R-07)
+        assert conn.execute(
+            "SELECT COUNT(*) FROM set_volume WHERE machine_id = ?", (machine,)
+        ).fetchone()[0] == 3
+        assert _total_volume(conn) == _V8_FIXTURE_VOLUME
+        assert conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = ? AND name = ?", ("index", "idx_set_machine")
+        ).fetchone()
+        # 사용자가 이후 머신을 지운 세트를 재기동이 되살리지 않는다 (데이터 단계는 한 번)
+        conn.execute("UPDATE workout_set SET machine_id = NULL WHERE set_index = 1")
+        conn.commit()
+    finally:
+        conn.close()
+    assert init_db(path) == []
+    conn = _connect(path)
+    try:
+        assert conn.execute("SELECT machine_id FROM workout_set WHERE set_index = 1").fetchone()[0] is None
+    finally:
+        conn.close()
+
+
+def test_migrate_v9_merges_machine_named_custom_exercise(tmp_path, env):
+    """머신 이름으로 만든 커스텀 종목(V9_MACHINE_EXERCISE_MERGE)은 내장 종목으로 합쳐진다 —
+    세트·즐겨찾기 이동, 세트의 머신·타겟 보존, 볼륨 불변."""
+    path = str(tmp_path / "v8.db")
+    _make_v8_db(path)
+    conn = _connect(path)
+    try:
+        ex, machine = _add_v8_machine_exercise(conn, "해머 mts 로우", "MTS Iso-Lateral Row")
+    finally:
+        conn.close()
+
+    log = init_db(path)
+    assert log == [
+        "set machines backfilled: 3",
+        "machine exercise merged: 해머 mts 로우 -> 아이소 래터럴 로우 (3 sets)",
+    ], log
+    conn = _connect(path)
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM exercise WHERE id = ?", (ex,)).fetchone()[0] == 0
+        builtin = conn.execute(
+            "SELECT id, is_builtin FROM exercise WHERE name_ko = ?", ("아이소 래터럴 로우",)
+        ).fetchone()
+        assert builtin["is_builtin"] == 1
+        moved = conn.execute(
+            "SELECT ws.machine_id, t.code AS target FROM workout_set ws"
+            " JOIN muscle_group t ON t.id = ws.target_id WHERE ws.exercise_id = ? ORDER BY ws.set_index",
+            (builtin["id"],),
+        ).fetchall()
+        assert [tuple(r) for r in moved] == [(machine, "lats")] * 3, "머신·세트 타겟 보존"
+        assert [r[0] for r in conn.execute("SELECT exercise_id FROM favorite").fetchall()] == [builtin["id"]]
+        assert _total_volume(conn) == _V8_FIXTURE_VOLUME
+        assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+    finally:
+        conn.close()
+    assert init_db(path) == []
+
+
+def test_migrate_v9_keeps_custom_when_volume_factors_differ(tmp_path, env):
+    """합치면 볼륨이 달라지는 경우(계수가 내장 종목과 다름)는 합치지 않고 남긴다."""
+    path = str(tmp_path / "v8.db")
+    _make_v8_db(path)
+    conn = _connect(path)
+    try:
+        ex, machine = _add_v8_machine_exercise(
+            conn, "해머 mts 로우", "MTS Iso-Lateral Row", load_multiplier=2
+        )
+    finally:
+        conn.close()
+    log = init_db(path)
+    assert log == [
+        "set machines backfilled: 3",
+        "machine exercise kept (volume factors differ): 해머 mts 로우",
+    ], log
+    conn = _connect(path)
+    try:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM workout_set WHERE exercise_id = ? AND machine_id = ?", (ex, machine)
+        ).fetchone()[0] == 3
+    finally:
+        conn.close()
+
+
+def test_v9_half_applied_restart_recovers(tmp_path, env):
+    """컬럼만 추가되고 버전 기록 전에 죽은 상태에서 재기동해도 데이터 단계가 한 번 돈다."""
+    path = str(tmp_path / "half.db")
+    _make_v8_db(path)
+    conn = _connect(path)
+    try:
+        _add_v8_machine_exercise(conn, "커스텀 머신 로우", "MTS Iso-Lateral Row")
+        conn.execute("ALTER TABLE workout_set ADD COLUMN machine_id INTEGER REFERENCES machine(id)")
+        conn.commit()
+    finally:
+        conn.close()
+    assert init_db(path) == ["set machines backfilled: 3"]
+    conn = _connect(path)
+    try:
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(workout_set)").fetchall()]
+        assert cols.count("machine_id") == 1
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
     finally:
         conn.close()

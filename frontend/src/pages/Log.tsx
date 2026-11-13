@@ -12,12 +12,16 @@ import {
   saveBodyweight,
   saveSet,
   subscribeOutbox,
+  updateOutboxMachine,
   updateOutboxTarget,
   updateSet,
 } from "../api/client";
 import type {
   Exercise,
+  Machine,
+  MachineRef,
   OutboxItem,
+  Region,
   SessionDetail,
   TargetCode,
   WorkoutSet,
@@ -36,13 +40,16 @@ import FlushFailuresBanner from "../components/FlushFailuresBanner";
 import Modal from "../components/Modal";
 import Spinner from "../components/Spinner";
 import Stepper from "../components/Stepper";
+import BackfillModal from "../components/backfill/BackfillModal";
+import { useBackfill } from "../components/backfill/useBackfill";
 import ExercisePicker from "../components/exercise-picker/ExercisePicker";
 import { pushRecent } from "../components/exercise-picker/recentExercises";
-import TargetBackfillModal from "../components/target/TargetBackfillModal";
+import MachineChipButton from "../components/machine/MachineChipButton";
+import MachineSheet from "../components/machine/MachineSheet";
+import { machineBadgeLabel, machineRefOf, sameMachine } from "../components/machine/machineRef";
 import TargetChipButton from "../components/target/TargetChipButton";
 import TechniqueChip, { TechniqueBadge } from "../components/TechniqueChip";
 import TargetSheet from "../components/target/TargetSheet";
-import { useTargetBackfill } from "../components/target/useTargetBackfill";
 
 function parseTs(s: string): number {
   const iso = s.includes("T") ? s : s.replace(" ", "T") + "Z";
@@ -93,6 +100,8 @@ interface LSet {
   volume_kg: number | null;
   target: TargetCode; // §10.2 세트 타겟 (전송 대기 세트는 카드 타겟 또는 종목 기본)
   technique: Technique | null; // §14 운동 방식
+  machine_id: number | null; // §15.1 세트를 수행한 머신 (null = 머신 없음)
+  machine_name: string | null;
   created_ms: number;
   pending: boolean;
   prW: boolean;
@@ -104,13 +113,6 @@ interface LGroup {
   name_ko: string;
   default_target: TargetCode;
   sets: LSet[];
-}
-
-// §10.2 소급 적용 대상 — ids = 저장된 세트(PATCH), clientIds = 전송 대기(outbox) 세트(큐 직접 갱신)
-interface TargetBackfillTarget {
-  code: TargetCode;
-  ids: number[];
-  clientIds: string[];
 }
 
 /* 시안에 없는 기존 요소 — 퀵칩과 같은 필/칩 톤으로 배치 */
@@ -132,6 +134,7 @@ function WarmupToggle({ on, onToggle }: { on: boolean; onToggle: () => void }) {
 function SetEditor({
   set: s,
   defaultTarget,
+  region,
   weightStep,
   onSaved,
   onDeleted,
@@ -139,6 +142,8 @@ function SetEditor({
 }: {
   set: LSet;
   defaultTarget: TargetCode;
+  /** 종목의 부위 — 머신 시트에서 같은 부위 머신을 앞에 둔다 */
+  region: Region | null;
   weightStep: number;
   onSaved: (updated: WorkoutSet) => void;
   onDeleted: () => void;
@@ -149,7 +154,9 @@ function SetEditor({
   const [warm, setWarm] = useState(s.is_warmup);
   const [technique, setTechnique] = useState<Technique | null>(s.technique);
   const [target, setTarget] = useState<TargetCode>(s.target);
+  const [machine, setMachine] = useState<MachineRef | null>(machineRefOf(s.machine_id, s.machine_name));
   const [sheetOpen, setSheetOpen] = useState(false);
+  const [machineOpen, setMachineOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -162,7 +169,16 @@ function SetEditor({
     setBusy(true);
     setErr(null);
     try {
-      onSaved(await updateSet(s.id as number, { weight_kg: w, reps: r, is_warmup: warm, target, technique }));
+      onSaved(
+        await updateSet(s.id as number, {
+          weight_kg: w,
+          reps: r,
+          is_warmup: warm,
+          target,
+          technique,
+          machine_id: machine?.id ?? null,
+        }),
+      );
     } catch (e) {
       setErr(apiErrorMessage(e));
       setBusy(false);
@@ -198,11 +214,13 @@ function SetEditor({
           inputMode="numeric"
         />
       </div>
-      <div className="mt-3 flex items-center gap-3">
+      <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2">
         <WarmupToggle on={warm} onToggle={() => setWarm(!warm)} />
         <TechniqueChip value={technique} onChange={setTechnique} />
         {/* §10.2 개별 세트 타겟 변경 */}
         <TargetChipButton value={target} defaultCode={defaultTarget} onClick={() => setSheetOpen(true)} />
+        {/* §15.1 개별 세트 머신 변경 */}
+        <MachineChipButton value={machine} onClick={() => setMachineOpen(true)} />
       </div>
       {err ? <p className="mt-2 text-center text-sm text-danger">{err}</p> : null}
       <div className="mt-3 flex gap-2">
@@ -224,6 +242,17 @@ function SetEditor({
         onSelect={(code) => {
           setTarget(code);
           setSheetOpen(false);
+        }}
+      />
+      <MachineSheet
+        open={machineOpen}
+        value={machine}
+        region={region}
+        description="이 세트 하나의 머신만 바꿉니다."
+        onClose={() => setMachineOpen(false)}
+        onSelect={(m) => {
+          setMachine(m);
+          setMachineOpen(false);
         }}
       />
     </div>
@@ -306,13 +335,15 @@ export default function Log() {
     weightStep,
     restTargetSeconds,
     targets,
+    machines,
     setActiveExercise,
     setStepper,
     setTarget,
+    setMachine,
     startRest,
     endSession,
   } = useAppStore();
-  const { nameOf } = useTargets();
+  const { nameOf, regionOf } = useTargets();
 
   const [serverSession, setServerSession] = useState<SessionDetail | null>(null);
   const [savedSets, setSavedSets] = useState<WorkoutSet[]>([]);
@@ -324,13 +355,17 @@ export default function Log() {
   const [inputError, setInputError] = useState<string | null>(null);
   const [editingKey, setEditingKey] = useState<string | null>(null);
   const [targetSheetOpen, setTargetSheetOpen] = useState(false);
+  const [machineSheetOpen, setMachineSheetOpen] = useState(false);
 
   const boundaryRef = useRef(false);
   const needNewSessionRef = useRef(false);
   const postBoundaryIdsRef = useRef<Set<string>>(new Set());
   const newSessionIdRef = useRef<number | null>(null);
   const prFlagsRef = useRef(new Map<string, { w: boolean; e: boolean }>());
+  // 지난 기록이 도착하면 스테퍼를 채울 종목 id (없으면 채우지 않는다)
   const awaitLastRecordRef = useRef<number | null>(null);
+  // 이 카드를 연 뒤 스테퍼를 직접 만졌는가 — 만졌으면 머신을 바꿔도 값을 덮어쓰지 않는다 (§15.3)
+  const stepperTouchedRef = useRef(false);
   const bwPromptedRef = useRef(false);
   const prevOutboxLen = useRef(0);
 
@@ -390,10 +425,10 @@ export default function Log() {
   );
 
   // §10.2 carry-over 금지 — 앱을 켜 둔 채 03:00 경계를 지나면 날짜가 바뀌어
-  // 다음 저장이 새 lazy 세션을 만든다. 이전 날짜에 설정된 카드 타겟은 폐기한다.
+  // 다음 저장이 새 lazy 세션을 만든다. 이전 날짜에 고른 카드 타겟·머신은 폐기한다.
   useEffect(() => {
     const st = useAppStore.getState();
-    if (st.targetsDate != null && st.targetsDate !== todayStr()) st.clearTargets();
+    if (st.stickyDate != null && st.stickyDate !== todayStr()) st.clearSticky();
   }, []);
 
   const exercisesQuery = useQuery({ queryKey: ["exercises"], queryFn: () => fetchExercises() });
@@ -402,23 +437,6 @@ export default function Log() {
 
   const bwQuery = useQuery({ queryKey: ["bodyweight"], queryFn: () => fetchBodyweight(1) });
   const latestBw = bwQuery.data?.[0]?.weight_kg ?? 0;
-
-  const lastRecordQuery = useQuery({
-    queryKey: ["last-record", activeExerciseId],
-    queryFn: () => fetchLastRecord(activeExerciseId as number),
-    enabled: activeExerciseId != null,
-  });
-
-  useEffect(() => {
-    if (activeExerciseId == null || awaitLastRecordRef.current !== activeExerciseId) return;
-    if (!lastRecordQuery.isSuccess) return;
-    awaitLastRecordRef.current = null;
-    const lr = lastRecordQuery.data;
-    if (lr && lr.sets.length > 0) {
-      const last = lr.sets[lr.sets.length - 1];
-      setStepper({ weight_kg: last.weight_kg, reps: last.reps });
-    }
-  }, [activeExerciseId, lastRecordQuery.isSuccess, lastRecordQuery.data, setStepper]);
 
   const estVolume = useCallback(
     (exId: number, w: number, reps: number) => {
@@ -470,6 +488,8 @@ export default function Log() {
             volume_kg: s.volume_kg,
             target: s.target,
             technique: s.technique ?? null,
+            machine_id: s.machine_id ?? null,
+            machine_name: s.machine_name ?? null,
             created_ms: parseTs(s.created_at),
             pending: false,
             prW: pr?.w ?? false,
@@ -494,6 +514,8 @@ export default function Log() {
         volume_kg: s.volume_kg,
         target: s.target,
         technique: s.technique ?? null,
+        machine_id: s.machine_id ?? null,
+        machine_name: s.machine_name ?? null,
         created_ms: parseTs(s.created_at),
         pending: false,
         prW: s.is_weight_pr,
@@ -517,6 +539,8 @@ export default function Log() {
         volume_kg: null,
         target: o.target ?? g.default_target,
         technique: o.technique ?? null,
+        machine_id: o.machine_id ?? null,
+        machine_name: o.machine_name ?? null,
         created_ms: parseTs(o.queued_at),
         pending: true,
         prW: false,
@@ -552,12 +576,155 @@ export default function Log() {
 
   const activeGroup = groups.find((g) => g.exercise_id === activeExerciseId) ?? null;
 
-  const selectExercise = (ex: Exercise) => {
+  // §15.3 카드의 머신 = 이 세션에서 직접 고른 값 → 이 카드 마지막 세트의 머신 → 지난번에 쓴 머신.
+  // 직접 고른 값은 null(머신 없음)도 유효하다. 다음 세트는 이 머신으로 저장된다.
+  const cardMachine = useCallback(
+    (exId: number, sets: LSet[]): MachineRef | null => {
+      const chosen = machines[exId];
+      if (chosen !== undefined) return chosen;
+      const last = sets[sets.length - 1];
+      if (last) return machineRefOf(last.machine_id, last.machine_name);
+      const ex = exMap.get(exId);
+      return machineRefOf(ex?.last_machine_id, ex?.last_machine_name);
+    },
+    [machines, exMap],
+  );
+  const activeMachine =
+    activeExerciseId != null ? cardMachine(activeExerciseId, activeGroup?.sets ?? []) : null;
+  const activeMachineId = activeMachine?.id ?? null;
+  const activeRegion = activeDefaultTarget ? regionOf(activeDefaultTarget) : null;
+
+  // "지난번"은 지금 기록 중인 세션을 빼고 찾는다 — 오늘 저장한 세트가 지난 기록으로 보이지 않게.
+  // (새 세션 시작 직후에는 같은 날의 앞 세션이 지난 기록이 된다.) 조회 키에는 넣지 않고 요청할 때의
+  // 값을 쓴다: 세션이 정해지면 아래 effect가 다시 받게 하고, 그동안은 받아 둔 값을 그대로 보여 준다.
+  const currentSessionId = boundary
+    ? null
+    : (serverSession?.id ?? savedSets[savedSets.length - 1]?.session_id ?? null);
+  const currentSessionIdRef = useRef<number | null>(null);
+  currentSessionIdRef.current = currentSessionId;
+  useEffect(() => {
+    void queryClient.invalidateQueries({ queryKey: ["last-record"] });
+  }, [currentSessionId, queryClient]);
+
+  // §15.3 지난 기록은 카드의 머신 범위로 본다 (머신이 다르면 걸리는 무게가 다르다).
+  // 그 범위에 기록이 없으면 머신과 무관한 지난 기록을 참고로 보여 준다 — 어느 머신 기록인지 밝혀서.
+  const lastRecordQuery = useQuery({
+    queryKey: ["last-record", activeExerciseId, activeMachineId ?? "none"],
+    queryFn: () =>
+      fetchLastRecord(activeExerciseId as number, activeMachineId, currentSessionIdRef.current),
+    enabled: activeExerciseId != null,
+  });
+  const scopedMissing = lastRecordQuery.isSuccess && lastRecordQuery.data == null;
+  const anyRecordQuery = useQuery({
+    queryKey: ["last-record", activeExerciseId, "any"],
+    queryFn: () => fetchLastRecord(activeExerciseId as number, undefined, currentSessionIdRef.current),
+    enabled: activeExerciseId != null && scopedMissing,
+  });
+  const lastRecord = lastRecordQuery.data ?? (scopedMissing ? (anyRecordQuery.data ?? null) : null);
+  const lastRecordFromOtherScope = scopedMissing && lastRecord != null;
+  const lastRecordLoading =
+    lastRecordQuery.isLoading || (scopedMissing && anyRecordQuery.isLoading);
+  // 프리필 판정 가능 시점: 범위 조회가 끝났고, 대체 조회가 필요했다면 그것도 끝남(실패 포함)
+  const lastRecordSettled =
+    lastRecordQuery.isSuccess && (!scopedMissing || anyRecordQuery.isSuccess || anyRecordQuery.isError);
+
+  useEffect(() => {
+    if (activeExerciseId == null || awaitLastRecordRef.current !== activeExerciseId) return;
+    if (!lastRecordSettled) return;
+    awaitLastRecordRef.current = null;
+    if (lastRecord && lastRecord.sets.length > 0) {
+      const last = lastRecord.sets[lastRecord.sets.length - 1];
+      setStepper({ weight_kg: last.weight_kg, reps: last.reps });
+    }
+  }, [activeExerciseId, lastRecordSettled, lastRecord, setStepper]);
+
+  // 스테퍼를 직접 만짐 — 늦게 도착한 지난 기록이나 머신 변경이 값을 덮어쓰지 않게 한다
+  const touchStepper = () => {
+    awaitLastRecordRef.current = null;
+    stepperTouchedRef.current = true;
+  };
+
+  // PATCH 응답을 로컬 두 소스(savedSets·serverSession)에 반영 — 편집 종료와 분리 (타겟·머신 일괄 적용에서도 사용)
+  const mergeUpdatedSet = useCallback((updated: WorkoutSet) => {
+    // PR 여부는 수정으로 바뀔 수 있다(중량·머신 범위) — 응답 값이 정본
+    if (updated.client_id) {
+      prFlagsRef.current.set(updated.client_id, { w: updated.is_weight_pr, e: updated.is_e1rm_pr });
+    }
+    setSavedSets((prev) => prev.map((s) => (s.id === updated.id ? updated : s)));
+    setServerSession((prev) =>
+      prev
+        ? {
+            ...prev,
+            exercises: prev.exercises.map((g) => ({
+              ...g,
+              sets: g.sets.map((x) =>
+                x.id === updated.id
+                  ? {
+                      ...x,
+                      weight_kg: updated.weight_kg,
+                      reps: updated.reps,
+                      is_warmup: updated.is_warmup,
+                      volume_kg: updated.volume_kg,
+                      target: updated.target,
+                      target_ko: updated.target_ko,
+                      technique: updated.technique,
+                      machine_id: updated.machine_id,
+                      machine_name: updated.machine_name,
+                    }
+                  : x,
+              ),
+            })),
+          }
+        : prev,
+    );
+  }, []);
+
+  // 소급 적용 실행 (§10.2 타겟 · §15.3 머신) — 저장된 세트는 PATCH, 전송 대기(outbox) 세트는 id가 없어
+  // PATCH 불가하므로 localStorage 큐의 값을 직접 갱신 (소급 완전성).
+  // 설정(물어보기/항상 적용/적용 안 함) 분기와 확인 다이얼로그는 useBackfill이 담당.
+  const backfill = useBackfill(async (t) => {
+    setInputError(null);
+    if (t.kind === "target") updateOutboxTarget(t.clientIds, t.code);
+    else updateOutboxMachine(t.clientIds, t.machine);
+    try {
+      for (const id of t.ids) {
+        mergeUpdatedSet(
+          await updateSet(
+            id,
+            t.kind === "target" ? { target: t.code } : { machine_id: t.machine?.id ?? null },
+          ),
+        );
+      }
+    } catch (e) {
+      setInputError(apiErrorMessage(e));
+    }
+    // 종목 목록의 "지난번 머신"(선택 시트 칩·다음 기본값)을 새로 받는다
+    if (t.kind === "machine") void queryClient.invalidateQueries({ queryKey: ["exercises"] });
+  });
+
+  // §15.3 카드의 머신을 정한다 (머신 칩 · 머신으로 찾기 공용): 이후 저장 세트에 적용,
+  // 이미 저장된 이 세션 같은 종목 세트는 설정에 따라 소급. 스테퍼를 직접 만지지 않았다면
+  // 새 머신의 지난 기록으로 다시 채운다.
+  const chooseMachine = async (exerciseId: number, machine: MachineRef | null, sets: LSet[]) => {
+    if (sameMachine(machine, cardMachine(exerciseId, sets))) return;
+    setMachine(exerciseId, machine);
+    if (!stepperTouchedRef.current) awaitLastRecordRef.current = exerciseId;
+    const changed = sets.filter((s) => s.machine_id !== (machine?.id ?? null));
+    await backfill.request({
+      kind: "machine",
+      machine,
+      ids: changed.filter((s) => s.id != null).map((s) => s.id as number),
+      clientIds: changed.filter((s) => s.id == null && s.client_id != null).map((s) => s.client_id as string),
+    });
+  };
+
+  const selectExercise = (ex: Exercise, machine?: Machine) => {
     // 최근 사용 push는 ExercisePicker가 내부에서 수행
     setPickerOpen(false);
     setEditingKey(null);
     setInputError(null);
     setActiveExercise(ex.id);
+    stepperTouchedRef.current = false;
     const g = groups.find((x) => x.exercise_id === ex.id);
     const last = g?.sets[g.sets.length - 1];
     if (last) {
@@ -568,6 +735,8 @@ export default function Log() {
       setStepper({ weight_kg: 0, reps: 8, is_warmup: false, technique: null });
       awaitLastRecordRef.current = ex.id;
     }
+    // §15.4 머신으로 찾아 들어왔으면 그 머신을 카드에 건다 (지난번 머신보다 우선)
+    if (machine) void chooseMachine(ex.id, { id: machine.id, name_ko: machine.name_ko }, g?.sets ?? []);
     if (ex.bodyweight_factor > 0 && !bwPromptedRef.current) {
       if (bwQuery.isError) void bwQuery.refetch();
       setBwCheckPending(true); // 조회 완료 후 effect에서 판정 — 로딩 레이스 방지 (§5.6)
@@ -589,6 +758,7 @@ export default function Log() {
     setActiveExercise(g.exercise_id);
     pushRecent(g.exercise_id);
     awaitLastRecordRef.current = null;
+    stepperTouchedRef.current = false;
     const last = g.sets[g.sets.length - 1];
     if (last) setStepper({ weight_kg: last.weight_kg, reps: last.reps, is_warmup: false, technique: null });
   };
@@ -606,9 +776,10 @@ export default function Log() {
     const isNewSession = needNewSessionRef.current;
     needNewSessionRef.current = false;
     // §10.2 carry-over 금지 — 03:00 경계를 넘겨 날짜가 바뀌었으면 새 세션이므로
-    // 이전 날짜의 카드 타겟을 폐기하고 종목 기본으로 저장한다
+    // 이전 날짜에 고른 카드 타겟·머신을 폐기한다 (타겟은 종목 기본으로, 머신은 이 카드의 현재 값 그대로)
+    const machine = activeMachine;
     const st = useAppStore.getState();
-    if (st.targetsDate != null && st.targetsDate !== todayStr()) st.clearTargets();
+    if (st.stickyDate != null && st.stickyDate !== todayStr()) st.clearSticky();
     const before = new Set(getOutbox().map((i) => i.client_id));
     const promise = saveSet({
       date: todayStr(),
@@ -620,6 +791,8 @@ export default function Log() {
       new_session: isNewSession || undefined,
       // §10.2 카드 sticky 타겟 — 미지정이면 필드 자체를 생략 (종목 기본 타겟)
       target: useAppStore.getState().targets[activeExerciseId],
+      // §15.1 카드의 머신 (없으면 null = 머신 없음)
+      machine,
     });
     const mine = getOutbox().find((i) => !before.has(i.client_id));
     if (mine && boundaryRef.current) postBoundaryIdsRef.current.add(mine.client_id);
@@ -633,6 +806,10 @@ export default function Log() {
         if (isNewSession) newSessionIdRef.current = saved.session_id;
         setSavedSets((prev) => [...prev, saved]);
         if (isNewSession) void refreshSession();
+        // 이 종목의 "지난번 머신"이 바뀌었으면 종목 목록을 새로 받는다 (선택 시트 칩·다음 기본값)
+        if (saved.machine_id !== (exMap.get(saved.exercise_id)?.last_machine_id ?? null)) {
+          void queryClient.invalidateQueries({ queryKey: ["exercises"] });
+        }
       }
     } catch (e) {
       if (isNewSession) needNewSessionRef.current = true;
@@ -657,54 +834,11 @@ export default function Log() {
     setBoundary(true);
   };
 
-  // PATCH 응답을 로컬 두 소스(savedSets·serverSession)에 반영 — 편집 종료와 분리 (타겟 일괄 적용에서도 사용)
-  const mergeUpdatedSet = useCallback((updated: WorkoutSet) => {
-    setSavedSets((prev) => prev.map((s) => (s.id === updated.id ? updated : s)));
-    setServerSession((prev) =>
-      prev
-        ? {
-            ...prev,
-            exercises: prev.exercises.map((g) => ({
-              ...g,
-              sets: g.sets.map((x) =>
-                x.id === updated.id
-                  ? {
-                      ...x,
-                      weight_kg: updated.weight_kg,
-                      reps: updated.reps,
-                      is_warmup: updated.is_warmup,
-                      volume_kg: updated.volume_kg,
-                      target: updated.target,
-                      target_ko: updated.target_ko,
-                      technique: updated.technique,
-                    }
-                  : x,
-              ),
-            })),
-          }
-        : prev,
-    );
-  }, []);
-
   const applySetUpdate = (updated: WorkoutSet) => {
     mergeUpdatedSet(updated);
     setEditingKey(null);
+    void queryClient.invalidateQueries({ queryKey: ["exercises"] }); // 머신이 바뀌었을 수 있다
   };
-
-  // §10.2 소급 적용 실행 — 저장된 세트는 PATCH, 전송 대기(outbox) 세트는 id가 없어
-  // PATCH 불가하므로 localStorage 큐의 target을 직접 갱신 (소급 완전성).
-  // 설정(물어보기/항상 적용/적용 안 함) 분기와 확인 다이얼로그는 useTargetBackfill이 담당.
-  const backfill = useTargetBackfill(async ({ code, ids, clientIds }: TargetBackfillTarget) => {
-    setInputError(null);
-    if (clientIds.length > 0) updateOutboxTarget(clientIds, code);
-    try {
-      for (const id of ids) {
-        mergeUpdatedSet(await updateSet(id, { target: code }));
-      }
-    } catch (e) {
-      setInputError(apiErrorMessage(e));
-    }
-  });
 
   // §10.2 타겟 선택 (카드 단위 sticky): 이후 저장 세트에 자동 적용.
   // 이미 저장된 이 세션 같은 종목 세트는 설정에 따라 소급 (backfill.request).
@@ -715,12 +849,18 @@ export default function Log() {
     setTarget(activeExerciseId, code === activeDefaultTarget ? null : code);
     const g = groups.find((x) => x.exercise_id === activeExerciseId);
     const changed = (g?.sets ?? []).filter((s) => s.target !== code);
-    const ids = changed.filter((s) => s.id != null).map((s) => s.id as number);
-    const clientIds = changed
-      .filter((s) => s.id == null && s.client_id != null)
-      .map((s) => s.client_id as string);
-    if (ids.length === 0 && clientIds.length === 0) return;
-    await backfill.request({ code, ids, clientIds });
+    await backfill.request({
+      kind: "target",
+      code,
+      ids: changed.filter((s) => s.id != null).map((s) => s.id as number),
+      clientIds: changed.filter((s) => s.id == null && s.client_id != null).map((s) => s.client_id as string),
+    });
+  };
+
+  const applyMachine = async (machine: MachineRef | null) => {
+    setMachineSheetOpen(false);
+    if (activeExerciseId == null) return;
+    await chooseMachine(activeExerciseId, machine, activeGroup?.sets ?? []);
   };
 
   const applySetDelete = (id: number) => {
@@ -745,6 +885,7 @@ export default function Log() {
           <SetEditor
             set={s}
             defaultTarget={g.default_target}
+            region={activeRegion}
             weightStep={weightStep}
             onSaved={applySetUpdate}
             onDeleted={() => applySetDelete(s.id as number)}
@@ -773,7 +914,7 @@ export default function Log() {
             {i + 1}
           </span>
           <span
-            className={`font-numeric text-[15px] font-semibold ${s.is_warmup ? "text-muted" : "text-text"}`}
+            className={`shrink-0 font-numeric text-[15px] font-semibold ${s.is_warmup ? "text-muted" : "text-text"}`}
           >
             {fmtWeight(s.weight_kg)} × {s.reps}
           </span>
@@ -787,6 +928,12 @@ export default function Log() {
           {s.target !== g.default_target ? (
             <span className="shrink-0 rounded-tag bg-accent-glow px-1.5 py-0.5 text-[10px] font-semibold text-accent">
               {nameOf(s.target)}
+            </span>
+          ) : null}
+          {/* §15.1 카드의 머신과 다른 세트만 뱃지 — 같으면 카드 머신 칩이 대신 말한다 */}
+          {s.machine_id !== activeMachineId ? (
+            <span className="min-w-0 truncate rounded-tag bg-surface-2 px-1.5 py-0.5 text-[10px] font-semibold text-muted">
+              {machineBadgeLabel(s.machine_name)}
             </span>
           ) : null}
           {s.prW || s.prE ? (
@@ -809,27 +956,31 @@ export default function Log() {
     );
   };
 
-  const renderCollapsedCard = (g: LGroup) => (
-    <Card key={g.exercise_id} variant="sunken" onClick={() => openGroup(g)}>
-      <div className="flex items-center justify-between gap-2">
-        <h2 className="truncate font-semibold">{g.name_ko}</h2>
-        <span className="flex shrink-0 items-center gap-2">
-          {g.sets.some((s) => s.pending) ? <Spinner size="sm" /> : null}
-          {/* 다크: "4 SETS" / 라이트: "✓ 4" */}
-          <span className="hidden font-numeric text-xs font-medium tracking-widest text-muted uppercase dark:inline">
-            {g.sets.length} SETS
+  const renderCollapsedCard = (g: LGroup) => {
+    const machine = cardMachine(g.exercise_id, g.sets);
+    return (
+      <Card key={g.exercise_id} variant="sunken" onClick={() => openGroup(g)}>
+        <div className="flex items-center justify-between gap-2">
+          <h2 className="truncate font-semibold">{g.name_ko}</h2>
+          <span className="flex shrink-0 items-center gap-2">
+            {g.sets.some((s) => s.pending) ? <Spinner size="sm" /> : null}
+            {/* 다크: "4 SETS" / 라이트: "✓ 4" */}
+            <span className="hidden font-numeric text-xs font-medium tracking-widest text-muted uppercase dark:inline">
+              {g.sets.length} SETS
+            </span>
+            <span className="text-sm font-bold text-accent dark:hidden">✓ {g.sets.length}</span>
           </span>
-          <span className="text-sm font-bold text-accent dark:hidden">✓ {g.sets.length}</span>
-        </span>
-      </div>
-      <p className="mt-1 truncate font-numeric text-sm text-muted">
-        {g.sets.map((s) => setLabel(s.weight_kg, s.reps, s.is_warmup)).join(" · ")}
-      </p>
-    </Card>
-  );
+        </div>
+        {machine ? <p className="mt-0.5 truncate text-[11px] text-faint">{machine.name_ko}</p> : null}
+        <p className="mt-1 truncate font-numeric text-sm text-muted">
+          {g.sets.map((s) => setLabel(s.weight_kg, s.reps, s.is_warmup)).join(" · ")}
+        </p>
+      </Card>
+    );
+  };
 
   const nudgeWeight = (delta: number) => {
-    awaitLastRecordRef.current = null;
+    touchStepper();
     setStepper({
       weight_kg: Math.min(500, Math.max(0, Math.round((stepper.weight_kg + delta) * 100) / 100)),
     });
@@ -841,7 +992,7 @@ export default function Log() {
     "active:brightness-95 dark:bg-surface dark:font-medium dark:text-muted dark:active:brightness-125";
 
   const renderActiveCard = (g: LGroup | null) => {
-    const lr = lastRecordQuery.data ?? null;
+    const lr = lastRecord;
     const nextSetNo = (g?.sets.length ?? 0) + 1;
     const restTargetMs = restTargetSeconds * 1000;
     const restElapsedMs = restStartedAt != null ? Math.max(0, now - restStartedAt) : 0;
@@ -849,35 +1000,44 @@ export default function Log() {
     const restPct = restStartedAt != null ? Math.min(100, (restElapsedMs / restTargetMs) * 100) : 0;
     return (
       <Card key={`active-${activeExerciseId}`} variant="live" className="flex flex-col gap-3">
-        <div className="flex items-center justify-between gap-2">
-          <h2 className="truncate text-base font-extrabold dark:text-[17px] dark:font-bold">
-            {activeExercise?.name_ko ?? g?.name_ko ?? ""}
-          </h2>
-          {/* §10.2 타겟 칩 — 종목 기본이 미리 선택, 탭 → 3단계 부위 시트 */}
-          {activeTarget ? (
-            <TargetChipButton
-              value={activeTarget}
-              defaultCode={activeDefaultTarget}
-              onClick={() => setTargetSheetOpen(true)}
+        <div className="flex flex-col gap-2">
+          <div className="flex items-center justify-between gap-2">
+            <h2 className="truncate text-base font-extrabold dark:text-[17px] dark:font-bold">
+              {activeExercise?.name_ko ?? g?.name_ko ?? ""}
+            </h2>
+            {/* §10.2 타겟 칩 — 종목 기본이 미리 선택, 탭 → 3단계 부위 시트 */}
+            {activeTarget ? (
+              <TargetChipButton
+                value={activeTarget}
+                defaultCode={activeDefaultTarget}
+                onClick={() => setTargetSheetOpen(true)}
+              />
+            ) : null}
+            {/* 진행중 표시: 라이트 = accent 필 뱃지 / 다크 = 오렌지 글로우 도트 */}
+            <span className="shrink-0 rounded-tag bg-accent px-2.5 py-1 text-[10px] font-bold text-on-accent dark:hidden">
+              진행중
+            </span>
+            <span
+              className="hidden h-2 w-2 shrink-0 rounded-full bg-accent shadow-[0_0_8px_var(--color-accent)] dark:block"
+              aria-hidden="true"
             />
-          ) : null}
-          {/* 진행중 표시: 라이트 = accent 필 뱃지 / 다크 = 오렌지 글로우 도트 */}
-          <span className="shrink-0 rounded-tag bg-accent px-2.5 py-1 text-[10px] font-bold text-on-accent dark:hidden">
-            진행중
-          </span>
-          <span
-            className="hidden h-2 w-2 shrink-0 rounded-full bg-accent shadow-[0_0_8px_var(--color-accent)] dark:block"
-            aria-hidden="true"
-          />
+          </div>
+          {/* §15.3 머신 칩 — 지난번에 쓴 머신이 미리 선택, 탭 → 내 머신 시트 */}
+          <div className="flex min-w-0">
+            <MachineChipButton value={activeMachine} onClick={() => setMachineSheetOpen(true)} />
+          </div>
         </div>
         {g && g.sets.length > 0 ? (
           <ul className="flex flex-col gap-2">{g.sets.map((s, i) => renderSetRow(g, s, i))}</ul>
         ) : null}
-        {lastRecordQuery.isLoading ? (
+        {lastRecordLoading ? (
           <p className="px-1 text-[10px] text-faint">지난 기록 불러오는 중…</p>
         ) : lr && lr.sets.length > 0 ? (
           <p className="px-1 text-[10px] text-faint">
-            지난번 {formatShortDate(lr.session_date)} —{" "}
+            {lastRecordFromOtherScope
+              ? `${activeMachine ? "이 머신으로는 첫 기록 · " : ""}지난번(${machineBadgeLabel(lr.machine_name)}) `
+              : "지난번 "}
+            {formatShortDate(lr.session_date)} —{" "}
             {lr.sets.map((s) => setLabel(s.weight_kg, s.reps, s.is_warmup)).join(" · ")}
           </p>
         ) : null}
@@ -889,7 +1049,7 @@ export default function Log() {
               value={stepper.weight_kg}
               step={weightStep}
               onChange={(v) => {
-                awaitLastRecordRef.current = null;
+                touchStepper();
                 setStepper({ weight_kg: v });
               }}
               min={0}
@@ -910,7 +1070,7 @@ export default function Log() {
             value={stepper.reps}
             step={1}
             onChange={(v) => {
-              awaitLastRecordRef.current = null;
+              touchStepper();
               setStepper({ reps: Math.round(v) });
             }}
             min={1}
@@ -1038,11 +1198,18 @@ export default function Log() {
         onClose={() => setTargetSheetOpen(false)}
         onSelect={(code) => void applyTarget(code)}
       />
-      {/* §10.2 소급 적용 확인 — 설정 "물어보기"일 때만 열린다 */}
-      <TargetBackfillModal
-        open={backfill.prompt != null}
-        count={(backfill.prompt?.ids.length ?? 0) + (backfill.prompt?.clientIds.length ?? 0)}
-        code={backfill.prompt?.code ?? null}
+      {/* §15.3 머신 선택 시트 — 카드 단위, 다음 세션에도 지난번 머신이 기본값 */}
+      <MachineSheet
+        open={machineSheetOpen}
+        value={activeMachine}
+        region={activeRegion}
+        description="선택하면 이 종목의 이후 세트에 적용되고, 다음에 이 종목을 열 때도 선택돼 있습니다. PR과 지난 기록은 머신별로 따로 봅니다."
+        onClose={() => setMachineSheetOpen(false)}
+        onSelect={(m) => void applyMachine(m)}
+      />
+      {/* 소급 적용 확인 (타겟·머신) — 설정 "물어보기"일 때만 열린다 */}
+      <BackfillModal
+        prompt={backfill.prompt}
         onResolve={(apply, remember) => void backfill.resolve(apply, remember)}
         onClose={backfill.dismiss}
       />

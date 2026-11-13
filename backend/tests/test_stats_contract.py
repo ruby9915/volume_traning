@@ -23,6 +23,7 @@ WEEK_VOLUME_POINT_KEYS = {"week_start", "volume_kg"}
 MUSCLE_SET_KEYS = {"code", "name_ko", "region", "set_count"}
 PR_EVENT_KEYS = {
     "date", "exercise_id", "exercise_name_ko", "kind", "value", "weight_kg", "reps",
+    "machine_id", "machine_name",  # §15.2
 }
 FREQUENCY_KEYS = {"days_this_week", "weekly_streak", "days_since_last"}
 TOTALS_KEYS = {"tonnage_kg", "session_count", "set_count", "rep_count"}

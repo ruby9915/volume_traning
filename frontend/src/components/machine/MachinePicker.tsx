@@ -4,21 +4,27 @@
 import { useEffect, useState } from "react";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { apiErrorMessage, createMachine, fetchMachineBrands, fetchMachines } from "../../api/client";
-import type { Machine, Region } from "../../api/types";
+import type { Machine, Region, TargetCode } from "../../api/types";
 import { REGION_NAMES_KO } from "../../api/types";
 import { useTargets } from "../../hooks/useTargets";
 import BottomSheet from "../BottomSheet";
 import Button from "../Button";
 import Spinner from "../Spinner";
+import TargetSheet from "../target/TargetSheet";
+import MachineRow from "./MachineRow";
 
 const LIMIT = 60;
 const FIELD_CLS =
   "min-h-12 w-full rounded-xl border border-line bg-bg px-4 placeholder:text-faint focus:border-accent focus:outline-none";
 
 function CustomMachineForm({ onCreated, onCancel }: { onCreated: (m: Machine) => void; onCancel: () => void }) {
+  const { nameOf } = useTargets();
   const [brand, setBrand] = useState("");
   const [model, setModel] = useState("");
   const [nameKo, setNameKo] = useState("");
+  // §15.5 참고 타겟 — 넣어 두면 이 머신으로 새 종목을 만들 때 기본 타겟이 채워지고 추천이 정확해진다
+  const [target, setTarget] = useState<TargetCode | null>(null);
+  const [targetOpen, setTargetOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -34,6 +40,7 @@ function CustomMachineForm({ onCreated, onCancel }: { onCreated: (m: Machine) =>
         brand: brand.trim(),
         model: model.trim(),
         ...(nameKo.trim() ? { name_ko: nameKo.trim() } : {}),
+        ...(target ? { target } : {}),
       });
       onCreated(m);
     } catch (e) {
@@ -49,11 +56,31 @@ function CustomMachineForm({ onCreated, onCancel }: { onCreated: (m: Machine) =>
       <input value={brand} onChange={(e) => setBrand(e.target.value)} placeholder="브랜드 (예: 뉴텍)" maxLength={50} className={FIELD_CLS} />
       <input value={model} onChange={(e) => setModel(e.target.value)} placeholder="모델명 (제조사 표기)" maxLength={50} className={FIELD_CLS} />
       <input value={nameKo} onChange={(e) => setNameKo(e.target.value)} placeholder="한글 별칭 (선택)" maxLength={50} className={FIELD_CLS} />
+      <button
+        type="button"
+        onClick={() => setTargetOpen(true)}
+        className={`touch-target w-full rounded-xl border px-4 text-left text-sm ${
+          target ? "border-accent/40 bg-accent-glow font-semibold text-accent" : "border-line text-muted"
+        }`}
+      >
+        {target ? `참고 타겟 · ${nameOf(target)}` : "참고 타겟 (선택 — 한 부위만 쓰는 머신이면 고르세요)"}
+      </button>
       {err ? <p className="text-sm text-danger">{err}</p> : null}
       <div className="flex gap-2">
         <Button variant="ghost" onClick={onCancel} disabled={busy}>취소</Button>
         <Button full onClick={() => void submit()} disabled={busy}>{busy ? <Spinner size="sm" /> : "추가하고 선택"}</Button>
       </div>
+      <TargetSheet
+        open={targetOpen}
+        value={target}
+        description="이 머신이 주로 쓰는 부위입니다. 케이블·랙처럼 여러 종목에 쓰는 장비는 비워 두세요."
+        onClose={() => setTargetOpen(false)}
+        onSelect={(code) => {
+          // 같은 값을 다시 고르면 해제 (선택 항목)
+          setTarget(code === target ? null : code);
+          setTargetOpen(false);
+        }}
+      />
     </div>
   );
 }
@@ -63,13 +90,15 @@ export default function MachinePicker({
   onClose,
   onPick,
   title = "머신 검색",
+  initialQuery,
 }: {
   open: boolean;
   onClose: () => void;
   onPick: (m: Machine) => void;
   title?: string;
+  /** 열 때 검색창에 넣어 둘 말 (종목 선택 시트에서 치던 검색어를 이어받는다) */
+  initialQuery?: string;
 }) {
-  const { nameOf } = useTargets();
   const [q, setQ] = useState("");
   const [dq, setDq] = useState("");
   const [brand, setBrand] = useState("");
@@ -82,7 +111,8 @@ export default function MachinePicker({
   }, [q]);
   useEffect(() => {
     if (!open) setCustom(false);
-  }, [open]);
+    else if (initialQuery !== undefined) setQ(initialQuery);
+  }, [open, initialQuery]);
 
   const brandsQ = useQuery({ queryKey: ["machine-brands"], queryFn: fetchMachineBrands, staleTime: 5 * 60_000 });
   const active = dq.length > 0 || brand !== "" || region !== "";
@@ -155,19 +185,7 @@ export default function MachinePicker({
               <ul className="divide-y divide-line">
                 {results.map((m) => (
                   <li key={m.id}>
-                    <button
-                      type="button"
-                      onClick={() => onPick(m)}
-                      className="flex w-full items-center justify-between gap-3 py-2.5 text-left active:bg-surface-2"
-                    >
-                      <span className="min-w-0">
-                        <span className="block truncate text-sm font-semibold">{m.name_ko}</span>
-                        <span className="block truncate text-xs text-muted">{m.brand} · {m.model}</span>
-                      </span>
-                      {m.target ? (
-                        <span className="shrink-0 rounded-chip border border-line px-2 py-0.5 text-[11px] text-muted">{nameOf(m.target)}</span>
-                      ) : null}
-                    </button>
+                    <MachineRow machine={m} onClick={() => onPick(m)} />
                   </li>
                 ))}
                 {results.length >= LIMIT ? (
