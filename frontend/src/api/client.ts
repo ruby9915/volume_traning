@@ -438,28 +438,33 @@ let flushPromise: Promise<void> | null = null;
 export function flushOutbox(): Promise<void> {
   if (!getToken()) return Promise.resolve();
   if (flushPromise) return flushPromise;
-  flushPromise = (async () => {
-    try {
-      for (;;) {
-        const [item] = readOutbox(); // 매회 재조회 — flush 중 추가된 항목도 순서대로 처리
-        if (!item) return;
-        try {
-          await postSet(item); // client_id 멱등 — 재전송 안전
+  const run = (async () => {
+    for (;;) {
+      const [item] = readOutbox(); // 매회 재조회 — flush 중 추가된 항목도 순서대로 처리
+      if (!item) return;
+      try {
+        await postSet(item); // client_id 멱등 — 재전송 안전
+        removeFromOutbox(item.client_id);
+      } catch (e) {
+        if (isPermanentReject(e)) {
+          notifyFlushFailure(item, e);
           removeFromOutbox(item.client_id);
-        } catch (e) {
-          if (isPermanentReject(e)) {
-            notifyFlushFailure(item, e);
-            removeFromOutbox(item.client_id);
-            continue;
-          }
-          return; // 401·네트워크·5xx: 큐 보존하고 중단 (§5.4-5)
+          continue;
         }
+        return; // 401·네트워크·5xx: 큐 보존하고 중단 (§5.4-5)
       }
-    } finally {
-      flushPromise = null;
     }
   })();
-  return flushPromise;
+  flushPromise = run;
+  // 진행 표시는 반드시 대입 **뒤에** 비동기로 지운다. 예전에는 async 함수 안의 finally에서
+  // 지웠는데, 큐가 비어 있으면 함수가 await 없이 끝나 finally가 대입보다 먼저 실행됐다 →
+  // 끝난 Promise가 flushPromise에 남아, 앱을 켠 뒤 첫 flush 이후로는 (새로고침 전까지) 한 번도
+  // 다시 돌지 않았다: online 복귀에도 대기 세트가 전송되지 않고 뒤따르는 세트도 전부 대기 (§15.8).
+  const clear = () => {
+    if (flushPromise === run) flushPromise = null;
+  };
+  void run.then(clear, clear);
+  return run;
 }
 
 // 세트 저장 — outbox 선기록 후 전송. 반환 null = 오프라인 큐 대기(나중에 flush로 동기화).
