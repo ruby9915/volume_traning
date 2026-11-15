@@ -1,0 +1,63 @@
+@startuml usecase-A-without-llm
+' A안 — LLM 없음. 현재 앱 v2.4를 as-is로 그린 유즈케이스 다이어그램 (전부 구현됨).
+' 근거: docs/HANDOFF-UML.md §4·§5, backend/app/routers/*.py
+' 위→아래 배치: B안과 같은 형식. UC5의 대체 흐름 2개는 타원 안 구분선 아래에 적었다.
+!pragma layout smetana
+skinparam defaultFontName "Malgun Gothic"
+skinparam actorStyle awesome
+skinparam usecase {
+  BackgroundColor #FFFFFF
+  BorderColor #555555
+}
+skinparam note {
+  BackgroundColor #F4F4F4
+  BorderColor #999999
+}
+top to bottom direction
+
+title A안 — LLM 없음 (현재 앱 v2.4, 전부 구현됨)\n액터 3 · 유즈케이스 9 · «include» 1 · «extend» 0
+
+actor "일반 사용자" as user
+actor "관리자" as admin
+actor "친구\n(읽기 전용)" as friend
+
+admin --|> user
+
+rectangle "볼륨 트래커 (as-is)" {
+  usecase "UC1 가입·로그인" as UC1
+  usecase "UC2 세트 기록\n(오프라인 outbox, client_id 멱등)" as UC2
+  usecase "UC2a 세션 확보\n(오늘 세션 없으면 생성)" as UC2a
+  usecase "UC3 이력 조회·편집" as UC3
+  usecase "UC4 종목 관리" as UC4
+  usecase UC5 as "UC5 내 머신 관리
+  (아카이브 검색 → 담기 / 수동 등록)
+  --
+  대체 흐름 2개, 전부 결정적:
+  검색 결과 없음 → 수동 폼 · (brand, model) 중복 → 409"
+  usecase "UC7 분석 조회\n(훈련 4주 미만이면 403)" as UC7
+  usecase "UC8 친구 요청·수락·끊기" as UC8
+  usecase "UC9 운영 현황 조회\n(읽기 전용)" as UC9
+}
+
+user --> UC1
+user --> UC2
+user --> UC3
+user --> UC4
+user --> UC5
+user --> UC7
+user --> UC8
+admin --> UC9
+friend --> UC3
+friend --> UC7
+
+UC2 ..> UC2a : <<include>>
+
+note left of friend
+  수락된 친구의 기록·분석·체중을
+  ?user_id= 로 읽기만 한다
+end note
+
+legend right
+  UC6 번호는 비워 둠 — B안에서 "사진으로 머신 식별"로 채워진다
+endlegend
+@enduml

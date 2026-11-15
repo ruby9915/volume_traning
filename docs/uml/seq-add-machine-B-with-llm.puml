@@ -1,0 +1,63 @@
+@startuml seq-add-machine-B-with-llm
+' B안 — 사진으로 머신 식별 → 확인 → 내 머신 추가. to-be 설계안.
+' /api/machines/identify 와 상태 코드(429/422/503)는 이 파일의 제안이며 코드에는 없다.
+' 근거: docs/HANDOFF-UML.md §6 UC-06, 장기목표.md §3 recognition_log
+skinparam defaultFontName "Malgun Gothic"
+skinparam sequenceMessageAlign center
+skinparam responseMessageBelowArrow true
+autonumber
+
+title B안 — 사진으로 머신 식별 후 내 머신 추가 (LLM 보조 액터, 설계 단계)\n대체 흐름 7개, 비결정적 응답을 사람이 확인한 뒤에만 저장
+
+actor "일반 사용자" as U
+participant "프론트" as F
+participant "서버\n(FastAPI)" as S
+participant "AI 비전 서비스\n(Claude API)" as AI <<외부 시스템>>
+database "SQLite\n(machine, recognition_log)" as D
+
+U -> F : "사진으로 찾기" → 촬영
+F -> F : 클라이언트 리사이즈 (긴 변 1,568px)
+F -> S : POST /api/machines/identify (image)
+S -> D : SELECT COUNT(*) FROM recognition_log (이번 달, user_id)
+D --> S : n건
+
+alt A3 월 쿼터 초과
+  S --> F : 429 quota_exceeded
+  F --> U : 아카이브 검색으로 안내
+else 쿼터 잔여
+  S -> AI : messages.create(image, "명판·로고·기구 형태 추출")
+  alt 정상 응답
+    AI --> S : {brand, model_text, machine_type, confidence}
+    S -> D : INSERT recognition_log (tokens_in/out, matched_machine_id)
+    alt confidence ≥ 임계값
+      S -> D : SELECT machine WHERE brand/model 유사
+      D --> S : 후보 0~n
+      S --> F : 200 {candidates, draft_form}
+      U -> F : UC6a 후보 선택 또는 폼 확인·수정 (사람이 최종 결정)
+      alt 기존 후보 선택
+        F -> S : POST /api/me/machines/{id}
+        S --> F : 200 내 머신 목록
+      else 새 항목
+        F -> S : POST /api/machines (source=photo)
+        S --> F : 201 신규 / A6 409 중복 → 기존 항목 담기
+      end
+    else A2 낮은 신뢰도
+      S --> F : 200 {candidates: [], reason: low_confidence}
+      F --> U : 검색창으로 유도
+    end
+  else A1 인식 실패 (머신 아님 · 흐림)
+    AI --> S : {machine_type: null}
+    S --> F : 422 not_a_machine (쿼터 미차감)
+    F --> U : 재촬영 안내
+  else A4 타임아웃 · 5xx
+    S --> F : 503 upstream_error
+    F --> U : 오류 표시, 재시도
+  else A5 안전 거부 (stop_reason: refusal)
+    S --> F : 422 refused
+    F --> U : 검색으로 안내
+  end
+end
+... A7 사용자가 어느 단계에서든 취소 → 아무것도 저장되지 않는다 ...
+
+note over S, AI : 사진은 응답 후 폐기 · 위치 좌표 미저장 · AI 응답은 사람이 확인하기 전에는 machine 테이블에 닿지 않는다
+@enduml

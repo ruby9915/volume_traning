@@ -1,0 +1,118 @@
+@startuml class-routine-C
+' C안 — 루틴·공유·추천 로그의 도메인 클래스 다이어그램 (to-be). 회색 패키지 = 기존 테이블(backend/app/db.py 열 이름 그대로), 노란 = 신규 제안.
+!pragma layout smetana
+skinparam defaultFontName "Malgun Gothic"
+skinparam classAttributeIconSize 0
+skinparam class {
+  BackgroundColor #FFFFFF
+  BorderColor #555555
+}
+skinparam packageStyle rectangle
+hide circle
+hide empty methods
+
+title C안 — 루틴 도메인 (to-be)과 기존 테이블의 연결
+
+package "기존 테이블 (as-is)" #F2F2F2 {
+  class user {
+    id : INTEGER
+    username : TEXT UNIQUE
+    display_name : TEXT
+    share_with_friends : INTEGER
+  }
+  class exercise {
+    id : INTEGER
+    name_ko : TEXT UNIQUE
+    aliases : TEXT
+    is_archived : INTEGER
+  }
+  class muscle_group {
+    id : INTEGER
+    code : TEXT UNIQUE
+    level : INTEGER
+    parent_id : INTEGER
+  }
+  class workout_session {
+    id : INTEGER
+    user_id : INTEGER
+    date : TEXT
+    {field} <color:#B8860B>routine_id : INTEGER NULL (열 추가)</color>
+  }
+  class friendship {
+    requester_id : INTEGER
+    addressee_id : INTEGER
+    status : pending | accepted
+  }
+}
+
+package "신규 (to-be)" #FFF9E6 {
+  class routine #FFF2CC {
+    id : INTEGER
+    owner_id : INTEGER
+    {field} name : TEXT ("4분할 루틴A")
+    description : TEXT
+    source : manual | ai | shared
+    {field} origin_routine_id : INTEGER NULL (복사 원본)
+    created_at, updated_at : TEXT
+  }
+  class routine_day #FFF2CC {
+    id : INTEGER
+    routine_id : INTEGER
+    day_index : INTEGER
+    {field} label : TEXT ("1일차 가슴·삼두")
+  }
+  class routine_item #FFF2CC {
+    id : INTEGER
+    routine_day_id : INTEGER
+    sort_order : INTEGER
+    exercise_id : INTEGER
+    target_id : INTEGER NULL
+    sets : INTEGER
+    reps_min, reps_max : INTEGER
+    technique : TEXT NULL
+    note : TEXT
+  }
+  class routine_share #FFF2CC {
+    id : INTEGER
+    routine_id : INTEGER
+    from_user_id : INTEGER
+    {field} to_user_id : INTEGER NULL (친구 직접 공유)
+    {field} share_code : TEXT NULL UNIQUE (비친구용)
+    status : sent | saved | revoked
+    created_at : TEXT
+  }
+  class recommendation_log #FFF2CC {
+    id : INTEGER
+    user_id : INTEGER
+    tokens_in, tokens_out : INTEGER
+    saved_routine_id : INTEGER NULL
+    created_at : TEXT
+  }
+}
+
+user "1" -- "0..*" routine : owner_id
+routine "1" *-- "1..*" routine_day
+routine_day "1" *-- "1..*" routine_item
+routine_item "0..*" -- "1" exercise
+routine_item "0..*" -- "0..1" muscle_group : target_id
+routine "0..*" --> "0..1" routine : origin_routine_id\n(공유 복사본의 출처)
+routine "1" -- "0..*" routine_share
+user "1" -- "0..*" routine_share : from_user_id
+user "0..1" -- "0..*" routine_share : to_user_id
+user "1" -- "0..*" recommendation_log
+recommendation_log "0..*" -- "0..1" routine : saved_routine_id
+workout_session "0..*" -- "0..1" routine : routine_id\n(루틴으로 시작한 세션)
+friendship .. routine_share : 친구 직접 공유는\nstatus=accepted 관계가 전제
+
+note bottom of routine_share
+  공유는 참조가 아니라 복사다.
+  받는 쪽이 저장하면 routine 행이 새로 생기고
+  origin_routine_id 로 출처만 남긴다.
+  원본을 고쳐도 복사본은 바뀌지 않는다.
+end note
+
+note bottom of recommendation_log
+  대화 원문·초안은 저장하지 않는다.
+  비용·건수(월 쿼터)와 저장 여부만 남긴다.
+end note
+@enduml

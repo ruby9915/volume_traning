@@ -1,0 +1,86 @@
+@startuml usecase-C-routine-focus-oblique
+' usecase-C-routine-focus.puml 과 내용이 같고, 선 스타일만 StarUML의 Oblique(한 줄 직선)처럼 바꾼 변형.
+' 렌더 방법 (주의): smetana 레이아웃은 linetype 지정을 무시하므로 pragma를 빼고 Graphviz dot으로 그려야 한다.
+'   PlantUML은 splines=polyline(장애물을 피해 꺾이는 직선)까지만 지원하므로, tools\dot-oblique.bat 래퍼로
+'   dot 입력의 polyline 을 line 으로 바꿔 렌더했다.
+'   java -jar plantuml.jar -charset UTF-8 -graphvizdot tools\dot-oblique.bat -tpng usecase-C-routine-focus-oblique.puml
+' 래퍼 없이 dot만으로 렌더하면 polyline 결과가 나오고, 선이 꺾이며 UC11→AI 선이 크게 우회한다.
+' C안 축약판 — 루틴 패키지만 펼치고, B안과 같은 UC1~UC9는 접었다. 발표 슬라이드용. 전체판은 usecase-C-with-llm-routine.puml.
+skinparam defaultFontName "Malgun Gothic"
+skinparam linetype polyline
+skinparam actorStyle awesome
+skinparam usecase {
+  BackgroundColor #FFFFFF
+  BorderColor #555555
+}
+skinparam note {
+  BackgroundColor #F4F4F4
+  BorderColor #999999
+}
+skinparam packageStyle rectangle
+top to bottom direction
+
+title C안 (루틴 패키지 확대) — B안과 같은 UC1~UC9는 접어 두었다\n추가분: 유즈케이스 6 · «include» 1 · «extend» 3 · 대체 흐름 5
+
+actor "일반 사용자" as user
+actor "친구\n(읽기 전용)" as friend
+
+rectangle "볼륨 트래커 (as-is + to-be)" {
+  package "기존 (B안과 동일)" #F2F2F2 {
+    usecase "UC2 세트 기록" as UC2
+    usecase "UC1 · UC3 · UC4 · UC7 · UC8 · UC9\n(접음)" as UCx
+    usecase "UC5 · UC6 · UC6a 머신\n(접음)" as UCm
+  }
+  package "루틴 (to-be)" #FFF9E6 {
+    usecase UC10 as "UC10 루틴 관리
+    (만들기·편집·삭제)
+    --
+    확장점: 새 루틴 만들 때"
+    usecase "UC10a 루틴으로 세션 시작" as UC10a #FFF2CC
+    usecase "UC11 AI 루틴 추천 채팅" as UC11 #FFF2CC
+    usecase "UC11a 추천 초안 확인·편집\n(사람이 최종 결정)" as UC11a #FFF2CC
+    usecase "UC12 루틴 공유\n(친구에게 보내기 / 공유 코드)" as UC12 #FFF2CC
+    usecase "UC13 공유 루틴 받기·저장\n(복사본, 편집 가능)" as UC13 #FFF2CC
+  }
+}
+
+actor "AI 서비스 (Claude API)\n역할: 루틴 조언자 (+ 비전 식별)" as ai <<외부 시스템>> #FFF2CC
+
+user --> UC2
+user --> UCx
+user --> UCm
+user --> UC10
+user --> UC11
+user --> UC12
+friend --> UCx
+friend --> UC13
+
+UC10a ..> UC2 : <<extend>>\n(종목 선택 대신 루틴 불러오기)
+UC11 ..> UC10 : <<extend>>\n(초안을 루틴으로 저장)
+UC11 ..> UC11a : <<include>>
+UC11 --> ai : 분석 요약 + 요구사항\n→ 루틴 초안(JSON)
+UC13 ..> UC10 : <<extend>>\n(받은 루틴을 내 루틴으로)
+UCm --> ai : 사진
+
+note bottom of UC11a
+  대체 흐름 5개 (조언자 역할에서 새로 생기는 것)
+  B1 훈련 4주 미만 → 분석 없이 요구사항만으로 추천, 안내 문구
+  B2 초안에 없는 종목명(환각·오타) → 종목 라이브러리와 대조, 미매칭 표시 → 사용자 교체
+  B3 운동 외 요청·부상 상담 → 조언 거절 + 안내 (의료 조언 회피)
+  B4 월 쿼터 초과 / API 장애 → 안내, 수동 루틴 만들기로
+  B5 사용자가 초안을 버림 → 저장 없음
+end note
+
+note bottom of ai
+  여전히 보조 액터: 사용자가 채팅을 시작해야 응답한다.
+  전송 데이터: 부위별 볼륨·빈도·PR의 집계 숫자, 내 머신·즐겨찾기 이름.
+  세트 원문·사용자명·친구 정보는 보내지 않는다.
+  응답은 JSON 초안이며 사용자가 저장하기 전에는 routine 테이블에 닿지 않는다.
+end note
+
+note left of friend
+  받은 루틴은 자기 공간에
+  복사본으로 저장한다.
+  원본은 바뀌지 않는다.
+end note
+@enduml

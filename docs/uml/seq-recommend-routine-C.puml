@@ -1,0 +1,66 @@
+@startuml seq-recommend-routine-C
+' C안 — AI 루틴 추천 채팅 → 초안 확인·편집 → 루틴 저장. to-be 설계안.
+' /api/routines/recommend, /api/routines 와 상태 코드는 제안이며 코드에는 없다. 분석 집계 출처: routers/stats.py, analytics.py
+skinparam defaultFontName "Malgun Gothic"
+skinparam sequenceMessageAlign center
+skinparam responseMessageBelowArrow true
+autonumber
+
+title C안 — AI 루틴 추천 채팅 (LLM = 조언자 보조 액터, 설계 단계)\n대체 흐름 5개 · 초안은 사람이 확인·편집한 뒤에만 저장
+
+actor "일반 사용자" as U
+participant "프론트\n(루틴 채팅 화면)" as F
+participant "서버\n(FastAPI)" as S
+participant "AI 서비스\n(Claude API, 조언자)" as AI <<외부 시스템>>
+database "SQLite" as D
+
+U -> F : "주 4일, 상체 위주, 어깨는 가볍게" 입력
+F -> S : POST /api/routines/recommend {message, history[]}
+S -> D : SELECT COUNT(*) FROM recommendation_log (이번 달, user_id)
+alt B4 월 쿼터 초과
+  S --> F : 429 quota_exceeded
+  F --> U : 수동 루틴 만들기로 안내
+else 쿼터 잔여
+  S -> D : 훈련 주 수 · 부위별 볼륨·빈도(8주) · PR · 내 머신 · 즐겨찾기
+  D --> S : 집계 결과
+  alt B1 훈련 주 4주 미만
+    S -> S : 컨텍스트 = 요구사항 + 종목·머신 이름만 (분석 요약 없음)
+  else 4주 이상
+    S -> S : 컨텍스트 = 요구사항 + 집계 숫자 (사용자명·세트 원문 제외)
+  end
+  S -> AI : messages.create(system: 코치 지시 + 초안 JSON 스키마,\nmessages: 컨텍스트 + history + message)
+  alt 정상 응답 (초안 포함)
+    AI --> S : {reply, routine_draft{name, days[{label, items[{exercise_name, sets, reps}]}]}, rationale}
+    S -> D : INSERT recommendation_log (tokens_in/out)
+    S -> D : SELECT exercise WHERE name_ko / aliases IN (초안 종목명)
+    D --> S : 매칭 결과
+    alt B2 미매칭 종목 있음 (환각 · 오타)
+      S --> F : 200 {reply, draft, unmatched: ["…"]}
+      F --> U : 미매칭 항목 표시 → 라이브러리에서 교체
+    else 전부 매칭
+      S --> F : 200 {reply, draft, unmatched: []}
+    end
+    loop 사용자가 만족할 때까지 (턴 상한 n)
+      U -> F : "3일차를 등으로 바꿔줘" 등 수정 요청
+      F -> S : POST /api/routines/recommend {message, history[]}
+      S -> AI : messages.create(이전 초안 + 수정 요청)
+      AI --> S : 수정된 초안
+      S --> F : 200
+    end
+    U -> F : UC11a 초안 편집 후 "저장"
+    F -> S : POST /api/routines {name, days, items, source: "ai"}
+    S -> D : INSERT routine, routine_day, routine_item
+    S --> F : 201 RoutineOut
+    F --> U : 내 루틴 목록에 표시
+  else B3 운동 외 요청 · 부상 상담
+    AI --> S : {reply: 안내 문구, routine_draft: null}
+    S --> F : 200 {reply, draft: null}
+    F --> U : 안내만 표시 (의료 조언 회피)
+  else B4 타임아웃 · 5xx
+    S --> F : 503 upstream_error
+    F --> U : 오류 표시, 재시도 또는 수동 작성
+  end
+end
+... B5 사용자가 어느 단계에서든 초안을 버림 → routine 테이블에 아무것도 남지 않는다 ...
+note over S, AI : 대화 이력은 클라이언트가 보관해 매 요청에 보낸다(서버 무상태) · 서버는 토큰·비용만 기록 · 집계 숫자만 전송 · 초안은 사람이 저장하기 전까지 DB에 닿지 않는다
+@enduml

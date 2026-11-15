@@ -1,0 +1,41 @@
+@startuml seq-add-machine-A-without-llm
+' A안 — 내 머신 추가 (LLM 없음). 현재 구현(backend/app/routers/catalog.py) 그대로.
+skinparam defaultFontName "Malgun Gothic"
+skinparam sequenceMessageAlign center
+skinparam responseMessageBelowArrow true
+autonumber
+
+title A안 — 내 머신 추가 (LLM 없음, 현재 구현)\n대체 흐름 2개, 전부 결정적
+
+actor "일반 사용자" as U
+participant "프론트\n(MachinePicker)" as F
+participant "서버\n(FastAPI catalog)" as S
+database "SQLite\n(machine, user_machine)" as D
+
+U -> F : 브랜드 칩 · 검색어 입력
+F -> S : GET /api/machines?q=…&brand=…
+S -> D : SELECT … WHERE 토큰 LIKE (AND 결합)
+D --> S : 행 0~n
+S --> F : 200 [MachineOut]
+
+alt 후보 있음 (기본 흐름)
+  U -> F : 항목 선택
+  F -> S : POST /api/me/machines/{id}
+  S -> D : INSERT OR IGNORE user_machine
+  S --> F : 200 내 머신 목록
+else A1 후보 없음 → 수동 등록
+  U -> F : brand · model · name_ko · target 입력
+  F -> S : POST /api/machines
+  S -> D : SELECT id FROM machine WHERE brand=? AND model=?
+  alt 신규
+    S -> D : INSERT machine + INSERT OR IGNORE user_machine
+    S --> F : 201 MachineOut (내 머신에 자동 등록)
+  else A2 (brand, model) 중복
+    S --> F : 409 "같은 브랜드·모델의 머신이 이미 있습니다"
+    F --> U : 409 detail 메시지 그대로 표시 → 사용자가 검색해 기존 항목 담기
+  end
+end
+F --> U : 내 머신 목록 갱신
+
+note over U, D : 외부 시스템 없음. 모든 분기가 DB 조회 결과로 결정된다.
+@enduml
