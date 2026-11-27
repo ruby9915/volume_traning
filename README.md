@@ -11,6 +11,7 @@ React(Vite) + FastAPI + SQLite. 연구실 PC(24시간 구동)에서 서버를 �
 ```
 backend/    FastAPI + SQLite (uv, pyproject.toml)
 frontend/   React SPA (Vite)
+mobile/     안드로이드 앱 (Capacitor) — 서버의 웹 화면을 감싼다
 scripts/    운영 스크립트 (start-server / register-startup / backup)
 ```
 
@@ -153,6 +154,29 @@ $env:DB_PATH = "$env:TEMP\vt-test.db"; $env:BACKUP_DIR = "$env:TEMP\vt-backup"; 
 - `--bg`는 보통 재부팅 후에도 유지된다. **PC를 한 번 재부팅해서 funnel이 살아있는지 확인**하고, 유지되지 않으면 `scripts\start-server.ps1`의 `tailscale funnel --bg 8000` 주석을 해제한다.
 - 아웃바운드 터널이므로 공유기 포트포워딩·인바운드 방화벽 개방이 필요 없다.
 - **기관 네트워크에서 터널이 막히면**: 폰에 Tailscale 앱을 설치해 tailnet 내부 접속으로 전환하거나, SETTING.MD §7.5의 유료 클라우드(Fly.io) 경로로 이동한다.
+
+## 안드로이드 앱 (`mobile/`, SETTING.MD §16)
+
+서버가 내려 주는 웹 화면을 그대로 여는 포장 앱(Capacitor 8)이다. 웹을 배포하면 앱도 바로 최신이 되므로,
+APK는 서버 주소나 `mobile/` 안의 코드가 바뀔 때만 다시 만든다.
+
+```powershell
+cd mobile
+npm install        # 최초 1회
+npm run apk        # 설정 반영(cap sync) + 디버그 APK 빌드
+# 결과: mobile\android\app\build\outputs\apk\debug\app-debug.apk
+```
+
+- 요건: JDK 21, Android SDK. `mobile\android\local.properties`(커밋하지 않음)에 SDK 위치를 **슬래시로** 적는다:
+  `sdk.dir=C:/Users/<me>/AppData/Local/Android/Sdk` (역슬래시로 쓰면 경로 오류로 빌드가 실패한다).
+- 폰에 설치: APK 파일을 폰으로 옮겨 연다(출처를 알 수 없는 앱 설치 허용). 에뮬레이터는 `adb install -r <apk>`.
+- 서버 주소는 `mobile\capacitor.config.js`의 `SERVER_URL` 한 곳이다. 공개 주소가 바뀌면 여기를 고치고 다시 빌드한다.
+- 테스트 서버로 시험: `$env:VT_SERVER_URL = "http://10.0.2.2:8010"; npm run apk` (에뮬레이터에서 `10.0.2.2`는 이 PC).
+  끝나면 `Remove-Item Env:VT_SERVER_URL` 후 다시 빌드해 공개 주소 APK로 되돌린다.
+- Android Studio로 볼 때는 `mobile\android` 폴더를 연다. **Gradle·AGP를 올리라는 안내는 따르지 않는다** —
+  Capacitor 8.6이 정한 조합(Gradle 8.14.3 + AGP 8.13)이고, Gradle 9.6 이상에서는 빌드가 깨진다.
+  VS Code의 Java 확장이 래퍼를 올려 버린 적이 있어 `.vscode/settings.json`에서 이 폴더를 가져오기 대상에서 뺐다.
+- 아이콘을 바꾸려면 `res\drawable\ic_launcher_foreground.xml`을 고치고 `python mobile\make_icons.py`(Pillow)를 돌린다.
 
 ## 백업
 

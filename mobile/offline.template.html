@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <title>볼륨 트래커</title>
+    <style>
+      :root { --bg: #f4f6f3; --ink: #17201b; --muted: #5f6b64; --accent: #0fa96f; --on-accent: #ffffff; }
+      @media (prefers-color-scheme: dark) {
+        :root { --bg: #0c0b0a; --ink: #f3efe9; --muted: #a39b90; --accent: #ff4a1f; --on-accent: #0c0b0a; }
+      }
+      html, body { height: 100%; margin: 0; }
+      body {
+        display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px;
+        padding: 24px; box-sizing: border-box; text-align: center;
+        background: var(--bg); color: var(--ink);
+        font-family: system-ui, -apple-system, "Noto Sans KR", sans-serif;
+      }
+      h1 { margin: 0; font-size: 20px; }
+      p { margin: 0; color: var(--muted); font-size: 15px; line-height: 1.5; }
+      button {
+        margin-top: 12px; min-height: 48px; padding: 0 28px; border: 0; border-radius: 14px;
+        background: var(--accent); color: var(--on-accent); font-size: 16px; font-weight: 700;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>서버에 연결하지 못했습니다</h1>
+    <p>인터넷 연결을 확인한 뒤 다시 시도해 주세요.</p>
+    <button type="button" id="retry">다시 시도</button>
+    <script>
+      // __SERVER_URL__ 은 capacitor.config.js 가 서버 주소로 바꿔 www/offline.html 을 만든다.
+      // 이 화면은 서버에 닿지 못할 때 뜨므로 다른 파일을 불러오지 않고 혼자서 동작해야 한다.
+      document.getElementById("retry").addEventListener("click", function () {
+        window.location.replace("__SERVER_URL__");
+      });
+    </script>
+  </body>
+</html>

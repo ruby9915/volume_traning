@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 웹 화면 다크 테마의 배경색(color-bg) -->
+    <color name="app_background">#0C0B0A</color>
+</resources>

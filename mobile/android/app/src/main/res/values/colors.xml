@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 웹 화면(frontend/src/index.css)의 라이트 테마 배경색(color-bg)·강조색(color-accent)과 맞춘다 -->
+    <color name="app_background">#F4F6F3</color>
+    <color name="brand">#0FA96F</color>
+</resources>

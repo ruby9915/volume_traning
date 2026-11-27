@@ -1,0 +1,17 @@
+{
+  "name": "volume-tracker-mobile",
+  "private": true,
+  "version": "1.0.0",
+  "description": "볼륨 트래커 안드로이드 앱 (Capacitor) — 서버가 내려 주는 웹 화면을 앱으로 감싼다",
+  "scripts": {
+    "sync": "cap sync android",
+    "apk": "cap sync android && cd android && .\\gradlew.bat assembleDebug"
+  },
+  "dependencies": {
+    "@capacitor/android": "^8.6.3",
+    "@capacitor/core": "^8.6.3"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^8.6.3"
+  }
+}
